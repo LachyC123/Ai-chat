@@ -69,9 +69,57 @@ for (let i = 0; i < totalSteps; i++) {
 if (state.clock.day !== startDay + DAYS)
   fail(`expected day ${startDay + DAYS} after ${DAYS} simulated days, got day ${state.clock.day}`);
 
-// Cost ceiling (plan §8): Phase 1 makes ZERO model calls.
+// Cost ceiling (plan §8): with no embedder configured, ZERO model calls.
 if (state.modelCalls.fable5 !== 0 || state.modelCalls.embeddings !== 0)
-  fail(`model calls in Phase 1: ${JSON.stringify(state.modelCalls)} (must be zero)`);
+  fail(`model calls without a configured provider: ${JSON.stringify(state.modelCalls)} (must be zero)`);
+
+// ---- Memory stream over simulated days (Phase 2) -------------------------
+const mems = mara.memories;
+if (mems.length < 5 * DAYS || mems.length > 40 * DAYS)
+  fail(`memory volume off: ${mems.length} memories over ${DAYS} days (expected ~8-15/day)`);
+if (state.embedQueue.length !== mems.length)
+  fail(`without an embedder every memory should stay queued: queue ${state.embedQueue.length} vs ${mems.length}`);
+for (const m of mems)
+  for (const rid of m.related_ids)
+    if (!mems.some((o) => o.id === rid)) fail(`orphaned related_id ${rid} on ${m.id}`);
+const dupIds = new Set();
+for (const m of mems) { if (dupIds.has(m.id)) fail(`duplicate memory id ${m.id}`); dupIds.add(m.id); }
+// Perception cooldown: player sightings can't be logged more often than the cooldown
+const sightings = mems.filter((m) => m.text.startsWith("Noticed the player")).map((m) => m.ts);
+for (let i = 1; i < sightings.length; i++)
+  if (sightings[i] - sightings[i - 1] < SIM.PERCEPTION_COOLDOWN_MIN)
+    fail(`player sightings ${sightings[i] - sightings[i - 1]} sim-min apart (cooldown ${SIM.PERCEPTION_COOLDOWN_MIN})`);
+// Retrieval works without embeddings (recency+importance fallback)
+const top = SIM.retrieveMemories(state, mara, { N: 5 });
+if (top.length !== 5 || !top.every((r) => Number.isFinite(r.score)))
+  fail("retrieval fallback (no embeddings) broken");
+
+// ---- Mock-embedder run: pipeline + batching cost ceiling ------------------
+const mockEmbed = async (texts) => texts.map((t) => {
+  const v = new Array(8).fill(0);
+  for (let i = 0; i < t.length; i++) v[i % 8] += t.charCodeAt(i) / 255;
+  const n = Math.hypot(...v) || 1;
+  return v.map((x) => x / n);
+});
+const st2 = SIM.createState();
+SIM.setEmbedder(st2, mockEmbed);
+const pumpEvery = 200; // ticks, ~= the browser's periodic queue pump
+for (let i = 0; i < Math.ceil((2 * SIM.DAY_REAL_SECONDS) / DT); i++) {
+  SIM.tick(st2, DT);
+  if (i % pumpEvery === 0) await SIM.processEmbedQueue(st2);
+}
+while (st2.embedQueue.length) await SIM.processEmbedQueue(st2);
+const mems2 = st2.npcs[0].memories;
+if (!mems2.length || !mems2.every((m) => m.embedding))
+  fail(`mock run: ${mems2.filter((m) => !m.embedding).length}/${mems2.length} memories left unembedded`);
+if (st2.modelCalls.embeddings === 0 || st2.modelCalls.embeddings > mems2.length)
+  fail(`mock run: ${st2.modelCalls.embeddings} embed calls for ${mems2.length} memories (batching broken or per-tick calls)`);
+if (st2.modelCalls.fable5 !== 0) fail("mock run: fable5 calls before Phase 3");
+// Embedded retrieval end-to-end: a gossip query should surface the market memory
+const qv = (await mockEmbed(["Went to the market square to hear the day's news."]))[0];
+const top2 = SIM.retrieveMemories(st2, st2.npcs[0], { queryVec: qv, N: 3 });
+if (!top2.some((r) => r.memory.text.includes("market square")))
+  fail("embedded retrieval: exact-text query didn't surface the matching memory in top 3");
 
 // Retrieval-math placeholder: pathfinding sanity until Phase 2 adds scoring tests
 const path = SIM.findPath(state.map, mara.locations.home.x, mara.locations.home.y,
@@ -81,6 +129,8 @@ const blocked = SIM.findPath(state.map, 5, 5, 6, 22); // pond center
 if (blocked !== null) fail("pathfinder returned a path into solid water");
 
 console.log(`Simulated ${DAYS} day(s) in ${totalSteps} ticks — ` +
-            `model calls: fable5=${state.modelCalls.fable5}, embeddings=${state.modelCalls.embeddings}`);
+            `${mems.length} memories, model calls: fable5=${state.modelCalls.fable5}, ` +
+            `embeddings=${state.modelCalls.embeddings} (no provider) / ` +
+            `mock run: ${mems2.length} memories, ${st2.modelCalls.embeddings} batched embed calls`);
 if (failures) { console.error(`${failures} failure(s)`); process.exit(1); }
 console.log("OK: all headless checks passed");

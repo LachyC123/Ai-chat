@@ -26,15 +26,62 @@
              border-radius: 50%; border: 2px solid #7a6aa8; background: rgba(24,19,44,.85);
              color: #ffcf6e; font: bold 13px ui-monospace, monospace; display: none;
              align-items: center; justify-content: center; touch-action: none; user-select: none; }
+  .cornerbtn { position: fixed; top: 8px; width: 36px; height: 36px; border-radius: 10px;
+               border: 1px solid #7a6aa8; background: rgba(24,19,44,.8); color: #f2ead8;
+               font-size: 18px; display: flex; align-items: center; justify-content: center;
+               cursor: pointer; user-select: none; touch-action: none; }
+  .panel { position: fixed; background: rgba(24,19,44,.96); color: #f2ead8;
+           border: 2px solid #7a6aa8; border-radius: 12px; padding: 14px 16px;
+           font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+           line-height: 1.5; display: none; z-index: 10; }
+  .panel h3 { margin: 0 0 8px; font-size: 13px; color: #ffcf6e; }
+  .panel button { background: #3a2f5c; color: #f2ead8; border: 1px solid #7a6aa8;
+                  border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer;
+                  margin: 2px 4px 2px 0; }
+  .panel input { background: #14102a; color: #f2ead8; border: 1px solid #7a6aa8;
+                 border-radius: 6px; padding: 4px 8px; font: inherit; width: 100%;
+                 box-sizing: border-box; margin: 4px 0 8px; }
+  .panel .note { opacity: .65; font-size: 11px; margin: 8px 0 0; }
+  #settings { top: 52px; right: 12px; width: min(320px, 88vw); }
+  #mempanel { top: 52px; right: 12px; width: min(360px, 90vw); max-height: 75vh;
+              overflow-y: auto; }
+  #mempanel .mem { border-bottom: 1px solid rgba(122,106,168,.35); padding: 4px 0; }
+  #mempanel .meta { color: #9d8fc7; font-size: 10px; }
+  #mempanel .score { color: #8fd18a; }
+  #lastretrieval { border: 1px solid rgba(122,106,168,.5); border-radius: 8px;
+                   padding: 6px 8px; margin-bottom: 10px; background: rgba(20,16,38,.5); }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
 <div class="hud" id="clock"></div>
-<div class="hud" id="hint">WASD / arrows — move &nbsp;·&nbsp; E — talk &nbsp;·&nbsp; T — time ×10</div>
+<div class="hud" id="hint">WASD / arrows — move &nbsp;·&nbsp; E — talk &nbsp;·&nbsp; M — memories &nbsp;·&nbsp; T — time ×10</div>
 <div class="hud" id="prompt"></div>
 <div id="dialogue"><div class="who"></div><div class="line"></div><div class="more">tap / E</div></div>
 <div id="talkbtn">TALK</div>
+<div id="gearbtn" class="cornerbtn" style="right: 12px" title="Settings">⚙</div>
+<div id="membtn" class="cornerbtn" style="right: 56px" title="Memory stream (M)">🧠</div>
+
+<div id="settings" class="panel">
+  <h3>Settings</h3>
+  <label>OpenAI API key (memory embeddings only)</label>
+  <input id="keyinput" type="password" placeholder="sk-..." autocomplete="off">
+  <div>
+    <button id="savekey">Save key</button>
+    <button id="clearkey">Clear key</button>
+    <button id="resetsave">Reset save data</button>
+  </div>
+  <div id="embedstatus" style="margin-top:8px"></div>
+  <p class="note">The key never leaves this browser (localStorage) and is used only for
+  <code>text-embedding-3-small</code> calls. Without a key the sim still runs —
+  retrieval scores on recency + importance alone until embeddings exist.</p>
+</div>
+
+<div id="mempanel" class="panel">
+  <h3>Mara's memory stream</h3>
+  <div id="lastretrieval">No retrieval yet — talk to Mara (E) to run one.</div>
+  <div id="memlist"></div>
+</div>
 
 <!-- ================================================================
      SIM CORE — pure logic, no DOM/canvas. This block is also loaded
@@ -159,6 +206,131 @@ const SIM = (() => {
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   };
 
+  // ---- Memory stream (plan §3 steps 1-3, §6 memory schema) -------------
+  const EMBED_BATCH = 32;
+  const PERCEPTION_RADIUS = 4;        // tiles — small on purpose (plan §3.1)
+  const PERCEPTION_COOLDOWN_MIN = 45; // sim minutes between repeat notices
+
+  const absMinutes = (clock) => (clock.day - 1) * 1440 + clock.minutes;
+  const fmtTimestamp = (ts) => `day${Math.floor(ts / 1440) + 1}_${fmtClock(ts % 1440)}`;
+
+  // Importance 1-10, scored once at creation — cheap heuristic, never a
+  // model call (plan §3.2). First matching rule wins.
+  const IMPORTANCE_RULES = [
+    [9, /\b(fight|fought|attack\w*|argu\w*|shout\w*|stole|steal\w*|theft|threat\w*)\b/i],
+    [8, /\b(gift\w*|gave|confess\w*|secret\w*|love|kiss\w*)\b/i],
+    [7, /\b(help\w*|fix\w*|rescu\w*|broke|accident\w*|hurt|injur\w*)\b/i],
+    [6, /\b(rumor\w*|gossip\w*|heard that)\b/i],
+    [4, /\b(player|talk\w*|chat\w*|conversation\w*)\b/i],
+    [2, /\b(open\w*|clos\w*|walk\w*|arriv\w*|woke|sleep\w*|turned in|saw)\b/i],
+  ];
+  function scoreImportance(text, type) {
+    if (type === "reflection") return 6;
+    for (const [v, re] of IMPORTANCE_RULES) if (re.test(text)) return v;
+    return 3;
+  }
+
+  function addMemory(state, npc, type, text, opts = {}) {
+    const ts = absMinutes(state.clock);
+    const mem = {
+      id: `mem_${String(state.memCounter++).padStart(5, "0")}`,
+      npc: npc.id, timestamp: fmtTimestamp(ts), ts, type, text,
+      importance: opts.importance ?? scoreImportance(text, type),
+      embedding: null,
+      related_ids: opts.related_ids ?? [],
+    };
+    npc.memories.push(mem);
+    state.embedQueue.push(mem);
+    return mem;
+  }
+
+  function cosineSim(a, b) {
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+    const n = Math.sqrt(na) * Math.sqrt(nb);
+    return n > 0 ? dot / n : 0;
+  }
+
+  // Embedding provider is injected (browser: OpenAI fetch when a key is
+  // configured; headless tests: deterministic mock; default: none, and the
+  // sim runs fine — retrieval falls back to recency + importance).
+  function setEmbedder(state, fn) { state.embedder = fn; }
+
+  async function embedText(state, text) {
+    if (!state.embedder) return null;
+    state.modelCalls.embeddings++;
+    return (await state.embedder([text]))[0];
+  }
+
+  async function processEmbedQueue(state) {
+    if (!state.embedder || !state.embedQueue.length) return 0;
+    const batch = state.embedQueue.splice(0, EMBED_BATCH);
+    state.modelCalls.embeddings++; // one batched API call
+    try {
+      const vecs = await state.embedder(batch.map((m) => m.text));
+      batch.forEach((m, i) => { m.embedding = vecs[i]; });
+      return batch.length;
+    } catch (e) {
+      state.embedQueue.unshift(...batch); // keep for retry
+      throw e;
+    }
+  }
+
+  // Retrieval (plan §3.3): score = α·recency + β·importance + γ·relevance,
+  // recency = 0.99^hours_elapsed, each component min-max normalized to
+  // [0,1] across the candidate set before weighting. Top-N by score.
+  const minmax = (vals) => {
+    const mn = Math.min(...vals), mx = Math.max(...vals);
+    return mx - mn < 1e-9 ? vals.map(() => 1) : vals.map((v) => (v - mn) / (mx - mn));
+  };
+  function retrieveMemories(state, npc, { queryVec = null, N = 12,
+      weights = { recency: 1, importance: 1, relevance: 1 } } = {}) {
+    if (!npc.memories.length) return [];
+    const now = absMinutes(state.clock);
+    const rec = minmax(npc.memories.map((m) => Math.pow(0.99, Math.max(0, (now - m.ts) / 60))));
+    const imp = minmax(npc.memories.map((m) => m.importance));
+    const rel = minmax(npc.memories.map((m) =>
+      queryVec && m.embedding ? cosineSim(m.embedding, queryVec) : 0));
+    return npc.memories
+      .map((m, i) => ({
+        memory: m, recency: rec[i], importance: imp[i], relevance: rel[i],
+        score: weights.recency * rec[i] + weights.importance * imp[i] + weights.relevance * rel[i],
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, N);
+  }
+
+  // ---- Perception (plan §3.1): raw observations into the stream ---------
+  const ACTIVITY_OBS = {
+    wake:          "Woke up at home and got ready for the day.",
+    open_shop:     "Opened the bakery for the morning.",
+    tend_shop:     "Tended the counter at the bakery.",
+    market_gossip: "Went to the market square to hear the day's news.",
+    head_home:     "Closed up the bakery and headed home for the evening.",
+    sleep:         "Turned in for the night.",
+  };
+  const PLACE_PHRASE = { home: "near her house", bakery: "at the bakery", market: "at the market square" };
+
+  function perceive(state, npc) {
+    const now = absMinutes(state.clock);
+    // Activity transitions become observations
+    if (npc.lastActivityKey !== npc.activity.activity) {
+      npc.lastActivityKey = npc.activity.activity;
+      const text = ACTIVITY_OBS[npc.activity.activity];
+      if (text) addMemory(state, npc, "observation", text);
+    }
+    // Player within perception radius (cooldown so it isn't logged per tick)
+    const p = state.player;
+    if (Math.hypot(p.x - npc.x, p.y - npc.y) <= PERCEPTION_RADIUS) {
+      const last = npc.perceptionCooldowns.player ?? -Infinity;
+      if (now - last >= PERCEPTION_COOLDOWN_MIN) {
+        npc.perceptionCooldowns.player = now;
+        addMemory(state, npc, "observation",
+          `Noticed the player nearby ${PLACE_PHRASE[npc.activity.place]}.`);
+      }
+    }
+  }
+
   // ---- Mara (agent schema per plan §6 + runtime state) ----------------
   // Phase 1: schedule is a hardcoded anchor loop. Fable 5 planning
   // replaces `current_plan` generation in Phase 3.
@@ -185,6 +357,8 @@ const SIM = (() => {
         player: { affinity: 0.1, summary: "Hasn't formed a strong opinion yet." },
       },
       inventory: ["bread_loaf_x4", "spare_key"],
+      // memory stream (plan §6 memory schema objects)
+      memories: [], perceptionCooldowns: {}, lastActivityKey: null,
       // runtime
       x: house.door.x, y: house.door.y, dir: "down",
       path: null, pathKey: null, talking: false,
@@ -223,6 +397,7 @@ const SIM = (() => {
   function updateNPC(state, npc, dtReal) {
     const act = activityAt(state.clock.minutes);
     npc.activity = act;
+    perceive(state, npc);
     if (npc.talking) { npc.moving = false; return; }
     const target = npc.locations[act.place];
     const distToTarget = Math.hypot(npc.x - target.x, npc.y - target.y);
@@ -260,9 +435,13 @@ const SIM = (() => {
       timeScale: 1,
       player: { x: 19, y: 20, dir: "down", moving: false, speed: 4.2 },
       npcs: [createMara()],
-      // Cost-ceiling instrumentation (plan §8): Phase 1 must make ZERO
-      // model calls. Anything that ever calls Fable 5 / embeddings must
-      // increment these so the headless harness can catch regressions.
+      // Memory infrastructure (Phase 2)
+      memCounter: 1, embedQueue: [], embedder: null,
+      // Cost-ceiling instrumentation (plan §8): fable5 stays ZERO until
+      // Phase 3; embeddings stays zero unless an embedder is configured,
+      // and even then only per write-batch / per retrieval query — never
+      // per tick. Anything that makes a model call must increment these
+      // so the headless harness can catch regressions.
       modelCalls: { fable5: 0, embeddings: 0 },
     };
   }
@@ -276,7 +455,10 @@ const SIM = (() => {
 
   return {
     TILE, MAP_W, MAP_H, DAY_REAL_SECONDS, T, SOLID, BUILDINGS, MARKET_SPOT,
+    PERCEPTION_RADIUS, PERCEPTION_COOLDOWN_MIN, EMBED_BATCH,
     buildMap, findPath, hm, fmtClock, activityAt, createState, tick, moveActor, isSolidAt,
+    absMinutes, fmtTimestamp, scoreImportance, addMemory, cosineSim,
+    setEmbedder, embedText, processEmbedQueue, retrieveMemories,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -290,6 +472,83 @@ if (typeof module !== "undefined") module.exports = SIM;
   const { TILE, MAP_W, MAP_H, T } = SIM;
   const state = SIM.createState();
   const mara = state.npcs[0];
+
+  // ---- Persistence (plan §2: localStorage for solo play) -----------------
+  // Embeddings are stored as base64 Float32 to keep ~600 memories inside
+  // the localStorage quota.
+  const SAVE_KEY = "townsim.save.v2";
+  const API_KEY_KEY = "townsim.openai_key";
+  const vecEnc = (v) => {
+    const u = new Uint8Array(new Float32Array(v).buffer);
+    let s = "";
+    for (let i = 0; i < u.length; i += 4096) s += String.fromCharCode(...u.subarray(i, i + 4096));
+    return btoa(s);
+  };
+  const vecDec = (s) => {
+    const bin = atob(s);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return Array.from(new Float32Array(u.buffer));
+  };
+  function saveGame() {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify({
+        v: 2, clock: state.clock, memCounter: state.memCounter,
+        player: { x: state.player.x, y: state.player.y },
+        mara: {
+          relationships: mara.relationships,
+          perceptionCooldowns: mara.perceptionCooldowns,
+          memories: mara.memories.map((m) =>
+            ({ ...m, embedding: m.embedding ? vecEnc(m.embedding) : null })),
+        },
+      }));
+    } catch (e) { console.warn("save failed", e); }
+  }
+  function loadGame() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (s.v !== 2) return;
+      state.clock = s.clock; state.memCounter = s.memCounter || 1;
+      state.player.x = s.player.x; state.player.y = s.player.y;
+      mara.relationships = s.mara.relationships;
+      mara.perceptionCooldowns = s.mara.perceptionCooldowns || {};
+      mara.memories = s.mara.memories.map((m) =>
+        ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
+      state.embedQueue = mara.memories.filter((m) => !m.embedding);
+      // Snap Mara to her scheduled place and mark the current activity as
+      // already observed so loading doesn't fabricate a transition memory.
+      const act = SIM.activityAt(state.clock.minutes);
+      mara.lastActivityKey = act.activity;
+      const loc = mara.locations[act.place];
+      mara.x = loc.x; mara.y = loc.y;
+    } catch (e) { console.warn("load failed", e); }
+  }
+  loadGame();
+  setInterval(saveGame, 30000);
+  addEventListener("pagehide", saveGame);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) saveGame(); });
+
+  // ---- Embeddings: OpenAI provider + background queue pump ---------------
+  function makeOpenAIEmbedder(key) {
+    return async (texts) => {
+      const res = await fetch("https://api.openai.com/v1/embeddings", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "text-embedding-3-small", input: texts }),
+      });
+      if (!res.ok) throw new Error(`OpenAI embeddings HTTP ${res.status}`);
+      const data = (await res.json()).data;
+      return data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
+    };
+  }
+  if (localStorage.getItem(API_KEY_KEY))
+    SIM.setEmbedder(state, makeOpenAIEmbedder(localStorage.getItem(API_KEY_KEY)));
+  setInterval(async () => {
+    if (!state.embedder || !state.embedQueue.length) return;
+    try { await SIM.processEmbedQueue(state); } catch (e) { console.warn(e.message); }
+  }, 4000);
 
   window.__DEBUG = { state, SIM }; // inspection hook for the browser test harness
 
@@ -389,10 +648,12 @@ if (typeof module !== "undefined") module.exports = SIM;
   // ---- Input: keyboard + virtual joystick --------------------------------
   const keys = new Set();
   addEventListener("keydown", (e) => {
-    if (e.repeat) return;
+    if (e.target.tagName === "INPUT" || e.repeat) return;
     keys.add(e.key.toLowerCase());
     if (e.key.toLowerCase() === "e") tryTalk();
     if (e.key.toLowerCase() === "t") state.timeScale = state.timeScale === 1 ? 10 : 1;
+    if (e.key.toLowerCase() === "m") togglePanel(memPanel);
+    if (e.key === "Escape") { memPanel.style.display = "none"; settingsPanel.style.display = "none"; }
   });
   addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 
@@ -434,11 +695,81 @@ if (typeof module !== "undefined") module.exports = SIM;
 
   function nearMara() { return Math.hypot(state.player.x - mara.x, state.player.y - mara.y) < 1.7; }
 
+  // Memory panel / settings panel wiring
+  const memPanel = document.getElementById("mempanel");
+  const settingsPanel = document.getElementById("settings");
+  const togglePanel = (p) => {
+    const open = p.style.display === "block";
+    memPanel.style.display = settingsPanel.style.display = "none";
+    p.style.display = open ? "none" : "block";
+  };
+  document.getElementById("membtn").addEventListener("pointerdown", (e) => { e.stopPropagation(); togglePanel(memPanel); });
+  document.getElementById("gearbtn").addEventListener("pointerdown", (e) => { e.stopPropagation(); togglePanel(settingsPanel); });
+
+  document.getElementById("savekey").addEventListener("click", () => {
+    const k = document.getElementById("keyinput").value.trim();
+    if (!k) return;
+    localStorage.setItem(API_KEY_KEY, k);
+    SIM.setEmbedder(state, makeOpenAIEmbedder(k));
+    document.getElementById("keyinput").value = "";
+  });
+  document.getElementById("clearkey").addEventListener("click", () => {
+    localStorage.removeItem(API_KEY_KEY);
+    SIM.setEmbedder(state, null);
+  });
+  document.getElementById("resetsave").addEventListener("click", () => {
+    if (confirm("Wipe the town's save data (memories, clock, positions)?")) {
+      localStorage.removeItem(SAVE_KEY);
+      location.reload();
+    }
+  });
+
+  let lastRetrieval = null;
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  function renderMemPanel() {
+    const status = document.getElementById("embedstatus");
+    const embedded = mara.memories.filter((m) => m.embedding).length;
+    status.textContent = `Key: ${state.embedder ? "configured" : "not set"} · ` +
+      `memories: ${mara.memories.length} (${embedded} embedded, ${state.embedQueue.length} queued) · ` +
+      `API calls: ${state.modelCalls.embeddings} embed, ${state.modelCalls.fable5} fable5`;
+    if (memPanel.style.display !== "block") return;
+    const lr = document.getElementById("lastretrieval");
+    if (lastRetrieval) {
+      lr.innerHTML = `<b>Retrieval</b> · query: "${esc(lastRetrieval.query)}"` +
+        ` · ${lastRetrieval.usedEmbedding ? "embedded query" : "recency+importance only (no embeddings)"}<br>` +
+        lastRetrieval.results.map((r) =>
+          `<span class="score">${r.score.toFixed(2)}</span> ` +
+          `<span class="meta">(r ${r.recency.toFixed(2)} · i ${r.importance.toFixed(2)} · v ${r.relevance.toFixed(2)})</span> ` +
+          esc(r.memory.text)).join("<br>");
+    }
+    document.getElementById("memlist").innerHTML = mara.memories.slice(-30).reverse().map((m) =>
+      `<div class="mem"><span class="meta">${m.timestamp} · ${m.type} · imp ${m.importance}` +
+      `${m.embedding ? " · ✓emb" : ""}</span><br>${esc(m.text)}</div>`).join("");
+  }
+  setInterval(renderMemPanel, 700);
+
+  async function runRetrievalDemo(queryText) {
+    let queryVec = null;
+    try { queryVec = await SIM.embedText(state, queryText); }
+    catch (e) { console.warn("query embed failed:", e.message); }
+    lastRetrieval = {
+      query: queryText, usedEmbedding: !!queryVec,
+      results: SIM.retrieveMemories(state, mara, { queryVec, N: 5 }),
+    };
+    renderMemPanel();
+  }
+
   function tryTalk() {
     if (dialogueOpen) { advanceDialogue(); return; }
     if (!nearMara() || mara.activity.activity === "sleep") return;
+    // The chat itself becomes a memory, linked to her latest sighting of the player
+    const seen = [...mara.memories].reverse().find((m) => /player/i.test(m.text));
+    SIM.addMemory(state, mara, "dialogue",
+      `The player stopped to chat while I was ${mara.activity.label}.`,
+      { related_ids: seen ? [seen.id] : [] });
+    runRetrievalDemo(`Chatting with the player while ${mara.activity.label}`);
     dialogueLines = [...(LINES[mara.activity.activity] || LINES.tend_shop),
-                     "(placeholder small talk — memories, plans and the Fable 5 voice layer arrive in Phases 2–3)"];
+                     "(placeholder small talk — the Fable 5 voice layer arrives in Phase 3; her memory stream is already recording this chat — press M to see it)"];
     dialogueIdx = 0; dialogueOpen = true; mara.talking = true;
     dlg.querySelector(".who").textContent = "Mara — baker";
     dlg.querySelector(".line").textContent = dialogueLines[0];
