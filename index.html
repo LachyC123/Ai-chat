@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Town Sim — Phase 1 Skeleton</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #1a1626; }
+  #game { display: block; width: 100vw; height: 100vh; touch-action: none;
+          image-rendering: pixelated; image-rendering: crisp-edges; }
+  .hud { position: fixed; font-family: ui-monospace, Menlo, Consolas, monospace;
+         color: #f2ead8; user-select: none; pointer-events: none; }
+  #clock { top: 10px; left: 10px; background: rgba(20,16,38,.72); padding: 6px 12px;
+           border-radius: 8px; font-size: 14px; letter-spacing: .5px; }
+  #hint { bottom: 10px; right: 12px; font-size: 12px; opacity: .75; text-align: right; }
+  #prompt { left: 50%; bottom: 96px; transform: translateX(-50%); font-size: 14px;
+            background: rgba(20,16,38,.8); padding: 5px 14px; border-radius: 999px; display: none; }
+  #dialogue { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+              width: min(560px, 92vw); background: rgba(24,19,44,.94); color: #f2ead8;
+              border: 2px solid #7a6aa8; border-radius: 12px; padding: 12px 16px;
+              font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px;
+              line-height: 1.45; display: none; cursor: pointer; user-select: none; }
+  #dialogue .who { color: #ffcf6e; font-weight: bold; margin-bottom: 4px; }
+  #dialogue .more { float: right; opacity: .6; font-size: 11px; margin-top: 6px; }
+  #talkbtn { position: fixed; right: 22px; bottom: 30px; width: 64px; height: 64px;
+             border-radius: 50%; border: 2px solid #7a6aa8; background: rgba(24,19,44,.85);
+             color: #ffcf6e; font: bold 13px ui-monospace, monospace; display: none;
+             align-items: center; justify-content: center; touch-action: none; user-select: none; }
+  .cornerbtn { position: fixed; top: 8px; width: 36px; height: 36px; border-radius: 10px;
+               border: 1px solid #7a6aa8; background: rgba(24,19,44,.8); color: #f2ead8;
+               font-size: 18px; display: flex; align-items: center; justify-content: center;
+               cursor: pointer; user-select: none; touch-action: none; }
+  .panel { position: fixed; background: rgba(24,19,44,.96); color: #f2ead8;
+           border: 2px solid #7a6aa8; border-radius: 12px; padding: 14px 16px;
+           font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+           line-height: 1.5; display: none; z-index: 10; }
+  .panel h3 { margin: 0 0 8px; font-size: 13px; color: #ffcf6e; }
+  .panel button { background: #3a2f5c; color: #f2ead8; border: 1px solid #7a6aa8;
+                  border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer;
+                  margin: 2px 4px 2px 0; }
+  .panel input { background: #14102a; color: #f2ead8; border: 1px solid #7a6aa8;
+                 border-radius: 6px; padding: 4px 8px; font: inherit; width: 100%;
+                 box-sizing: border-box; margin: 4px 0 8px; }
+  .panel .note { opacity: .65; font-size: 11px; margin: 8px 0 0; }
+  #settings { top: 52px; right: 12px; width: min(320px, 88vw); }
+  #mempanel { top: 52px; right: 12px; width: min(360px, 90vw); max-height: 75vh;
+              overflow-y: auto; }
+  #mempanel .mem { border-bottom: 1px solid rgba(122,106,168,.35); padding: 4px 0; }
+  #mempanel .meta { color: #9d8fc7; font-size: 10px; }
+  #mempanel .score { color: #8fd18a; }
+  #lastretrieval { border: 1px solid rgba(122,106,168,.5); border-radius: 8px;
+                   padding: 6px 8px; margin-bottom: 10px; background: rgba(20,16,38,.5); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud" id="clock"></div>
+<div class="hud" id="hint">WASD / arrows — move &nbsp;·&nbsp; E — talk &nbsp;·&nbsp; M — memories &nbsp;·&nbsp; T — time ×10</div>
+<div class="hud" id="prompt"></div>
+<div id="dialogue"><div class="who"></div><div class="line"></div><div class="more">tap / E</div></div>
+<div id="talkbtn">TALK</div>
+<div id="gearbtn" class="cornerbtn" style="right: 12px" title="Settings">⚙</div>
+<div id="membtn" class="cornerbtn" style="right: 56px" title="Memory stream (M)">🧠</div>
+
+<div id="settings" class="panel">
+  <h3>Settings</h3>
+  <label>OpenAI API key (memory embeddings only)</label>
+  <input id="keyinput" type="password" placeholder="sk-..." autocomplete="off">
+  <div>
+    <button id="savekey">Save key</button>
+    <button id="clearkey">Clear key</button>
+    <button id="resetsave">Reset save data</button>
+  </div>
+  <div id="embedstatus" style="margin-top:8px"></div>
+  <p class="note">The key never leaves this browser (localStorage) and is used only for
+  <code>text-embedding-3-small</code> calls. Without a key the sim still runs —
+  retrieval scores on recency + importance alone until embeddings exist.</p>
+</div>
+
+<div id="mempanel" class="panel">
+  <h3>Mara's memory stream</h3>
+  <div id="lastretrieval">No retrieval yet — talk to Mara (E) to run one.</div>
+  <div id="memlist"></div>
+</div>
+
+<!-- ================================================================
+     SIM CORE — pure logic, no DOM/canvas. This block is also loaded
+     by test/headless.mjs, so keep it environment-agnostic.
+     ================================================================ -->
+<script id="sim-core">
+const SIM = (() => {
+  const TILE = 16, MAP_W = 40, MAP_H = 28;
+  const DAY_REAL_SECONDS = 600;               // 1 in-game day = 10 real minutes
+  const T = { GRASS:0, PATH:1, WATER:2, TREE:3, WALL:4, ROOF:5, DOOR:6, STALL:7, FLOWER:8 };
+  const SOLID = new Set([T.WATER, T.TREE, T.WALL, T.ROOF, T.STALL]);
+
+  // Deterministic PRNG so map decoration is identical in browser and headless runs.
+  function mulberry32(seed) {
+    return function () {
+      seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // ---- Buildings (schema per plan §6) --------------------------------
+  const BUILDINGS = [
+    { id: "building_bakery", name: "Mara's Bakery", function: "shop", owner: "npc_mara",
+      open_hours: ["07:00", "19:00"], rect: { x: 7, y: 5, w: 7, h: 5 }, door: { x: 10, y: 9 } },
+    { id: "building_bakery_house", name: "Mara's House", function: "home", owner: "npc_mara",
+      open_hours: null, rect: { x: 27, y: 5, w: 6, h: 4 }, door: { x: 29, y: 8 } },
+  ];
+
+  const MARKET_SPOT = { x: 19, y: 18 };
+
+  function buildMap() {
+    const m = [];
+    const rnd = mulberry32(1337);
+    for (let y = 0; y < MAP_H; y++) {
+      m.push([]);
+      for (let x = 0; x < MAP_W; x++) m[y].push(rnd() < 0.06 ? T.FLOWER : T.GRASS);
+    }
+    const set = (x, y, t) => { if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) m[y][x] = t; };
+
+    // Pond (bottom-left)
+    for (let y = 20; y <= 25; y++)
+      for (let x = 3; x <= 10; x++) {
+        const dx = (x - 6.5) / 3.8, dy = (y - 22.5) / 2.6;
+        if (dx * dx + dy * dy < 1) set(x, y, T.WATER);
+      }
+
+    // Paths: main east-west street + spurs to each door and the plaza
+    for (let x = 8; x <= 31; x++) set(x, 13, T.PATH);
+    for (let y = 10; y <= 13; y++) set(10, y, T.PATH);        // bakery spur
+    for (let y = 9; y <= 13; y++) set(29, y, T.PATH);         // house spur
+    for (let y = 13; y <= 15; y++) set(19, y, T.PATH);        // plaza spur
+
+    // Market plaza
+    for (let y = 15; y <= 21; y++)
+      for (let x = 15; x <= 24; x++) set(x, y, T.PATH);
+    set(16, 16, T.STALL); set(22, 16, T.STALL); set(24, 19, T.STALL); set(15, 20, T.STALL);
+
+    // Buildings: roof rows on top, wall row in front, one door
+    for (const b of BUILDINGS) {
+      const { x, y, w, h } = b.rect;
+      for (let ry = y; ry < y + h - 1; ry++)
+        for (let rx = x; rx < x + w; rx++) set(rx, ry, T.ROOF);
+      for (let rx = x; rx < x + w; rx++) set(rx, y + h - 1, T.WALL);
+      set(b.door.x, b.door.y, T.DOOR);
+    }
+
+    // Tree ring at the map border + scattered trees clear of paths/buildings
+    for (let x = 0; x < MAP_W; x++) { set(x, 0, T.TREE); set(x, MAP_H - 1, T.TREE); }
+    for (let y = 0; y < MAP_H; y++) { set(0, y, T.TREE); set(MAP_W - 1, y, T.TREE); }
+    const rnd2 = mulberry32(9001);
+    for (let i = 0; i < 46; i++) {
+      const x = 1 + Math.floor(rnd2() * (MAP_W - 2));
+      const y = 1 + Math.floor(rnd2() * (MAP_H - 2));
+      if (m[y][x] === T.GRASS || m[y][x] === T.FLOWER) {
+        let nearPath = false;
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const t = (m[y + dy] || [])[x + dx];
+            if (t === T.PATH || t === T.DOOR) nearPath = true;
+          }
+        if (!nearPath) set(x, y, T.TREE);
+      }
+    }
+    return m;
+  }
+
+  // ---- A* pathfinding (4-directional; map is tiny, arrays are fine) --
+  function findPath(map, sx, sy, tx, ty) {
+    if (map[ty] === undefined || SOLID.has(map[ty][tx])) return null;
+    const key = (x, y) => y * MAP_W + x;
+    const open = [{ x: sx, y: sy, g: 0, f: 0, parent: null }];
+    const seen = new Map([[key(sx, sy), 0]]);
+    while (open.length) {
+      let bi = 0;
+      for (let i = 1; i < open.length; i++) if (open[i].f < open[bi].f) bi = i;
+      const cur = open.splice(bi, 1)[0];
+      if (cur.x === tx && cur.y === ty) {
+        const path = [];
+        for (let n = cur; n; n = n.parent) path.unshift({ x: n.x, y: n.y });
+        return path;
+      }
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cur.x + dx, ny = cur.y + dy;
+        if (nx < 0 || ny < 0 || nx >= MAP_W || ny >= MAP_H) continue;
+        if (SOLID.has(map[ny][nx])) continue;
+        const g = cur.g + 1;
+        const k = key(nx, ny);
+        if (seen.has(k) && seen.get(k) <= g) continue;
+        seen.set(k, g);
+        open.push({ x: nx, y: ny, g, f: g + Math.abs(nx - tx) + Math.abs(ny - ty), parent: cur });
+      }
+    }
+    return null;
+  }
+
+  // ---- Clock ---------------------------------------------------------
+  const hm = (s) => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
+  const fmtClock = (min) => {
+    const h = Math.floor(min / 60) % 24, m = Math.floor(min % 60);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  };
+
+  // ---- Memory stream (plan §3 steps 1-3, §6 memory schema) -------------
+  const EMBED_BATCH = 32;
+  const PERCEPTION_RADIUS = 4;        // tiles — small on purpose (plan §3.1)
+  const PERCEPTION_COOLDOWN_MIN = 45; // sim minutes between repeat notices
+
+  const absMinutes = (clock) => (clock.day - 1) * 1440 + clock.minutes;
+  const fmtTimestamp = (ts) => `day${Math.floor(ts / 1440) + 1}_${fmtClock(ts % 1440)}`;
+
+  // Importance 1-10, scored once at creation — cheap heuristic, never a
+  // model call (plan §3.2). First matching rule wins.
+  const IMPORTANCE_RULES = [
+    [9, /\b(fight|fought|attack\w*|argu\w*|shout\w*|stole|steal\w*|theft|threat\w*)\b/i],
+    [8, /\b(gift\w*|gave|confess\w*|secret\w*|love|kiss\w*)\b/i],
+    [7, /\b(help\w*|fix\w*|rescu\w*|broke|accident\w*|hurt|injur\w*)\b/i],
+    [6, /\b(rumor\w*|gossip\w*|heard that)\b/i],
+    [4, /\b(player|talk\w*|chat\w*|conversation\w*)\b/i],
+    [2, /\b(open\w*|clos\w*|walk\w*|arriv\w*|woke|sleep\w*|turned in|saw)\b/i],
+  ];
+  function scoreImportance(text, type) {
+    if (type === "reflection") return 6;
+    for (const [v, re] of IMPORTANCE_RULES) if (re.test(text)) return v;
+    return 3;
+  }
+
+  function addMemory(state, npc, type, text, opts = {}) {
+    const ts = absMinutes(state.clock);
+    const mem = {
+      id: `mem_${String(state.memCounter++).padStart(5, "0")}`,
+      npc: npc.id, timestamp: fmtTimestamp(ts), ts, type, text,
+      importance: opts.importance ?? scoreImportance(text, type),
+      embedding: null,
+      related_ids: opts.related_ids ?? [],
+    };
+    npc.memories.push(mem);
+    state.embedQueue.push(mem);
+    return mem;
+  }
+
+  function cosineSim(a, b) {
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+    const n = Math.sqrt(na) * Math.sqrt(nb);
+    return n > 0 ? dot / n : 0;
+  }
+
+  // Embedding provider is injected (browser: OpenAI fetch when a key is
+  // configured; headless tests: deterministic mock; default: none, and the
+  // sim runs fine — retrieval falls back to recency + importance).
+  function setEmbedder(state, fn) { state.embedder = fn; }
+
+  async function embedText(state, text) {
+    if (!state.embedder) return null;
+    state.modelCalls.embeddings++;
+    return (await state.embedder([text]))[0];
+  }
+
+  async function processEmbedQueue(state) {
+    if (!state.embedder || !state.embedQueue.length) return 0;
+    const batch = state.embedQueue.splice(0, EMBED_BATCH);
+    state.modelCalls.embeddings++; // one batched API call
+    try {
+      const vecs = await state.embedder(batch.map((m) => m.text));
+      batch.forEach((m, i) => { m.embedding = vecs[i]; });
+      return batch.length;
+    } catch (e) {
+      state.embedQueue.unshift(...batch); // keep for retry
+      throw e;
+    }
+  }
+
+  // Retrieval (plan §3.3): score = α·recency + β·importance + γ·relevance,
+  // recency = 0.99^hours_elapsed, each component min-max normalized to
+  // [0,1] across the candidate set before weighting. Top-N by score.
+  const minmax = (vals) => {
+    const mn = Math.min(...vals), mx = Math.max(...vals);
+    return mx - mn < 1e-9 ? vals.map(() => 1) : vals.map((v) => (v - mn) / (mx - mn));
+  };
+  function retrieveMemories(state, npc, { queryVec = null, N = 12,
+      weights = { recency: 1, importance: 1, relevance: 1 } } = {}) {
+    if (!npc.memories.length) return [];
+    const now = absMinutes(state.clock);
+    const rec = minmax(npc.memories.map((m) => Math.pow(0.99, Math.max(0, (now - m.ts) / 60))));
+    const imp = minmax(npc.memories.map((m) => m.importance));
+    const rel = minmax(npc.memories.map((m) =>
+      queryVec && m.embedding ? cosineSim(m.embedding, queryVec) : 0));
+    return npc.memories
+      .map((m, i) => ({
+        memory: m, recency: rec[i], importance: imp[i], relevance: rel[i],
+        score: weights.recency * rec[i] + weights.importance * imp[i] + weights.relevance * rel[i],
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, N);
+  }
+
+  // ---- Perception (plan §3.1): raw observations into the stream ---------
+  const ACTIVITY_OBS = {
+    wake:          "Woke up at home and got ready for the day.",
+    open_shop:     "Opened the bakery for the morning.",
+    tend_shop:     "Tended the counter at the bakery.",
+    market_gossip: "Went to the market square to hear the day's news.",
+    head_home:     "Closed up the bakery and headed home for the evening.",
+    sleep:         "Turned in for the night.",
+  };
+  const PLACE_PHRASE = { home: "near her house", bakery: "at the bakery", market: "at the market square" };
+
+  function perceive(state, npc) {
+    const now = absMinutes(state.clock);
+    // Activity transitions become observations
+    if (npc.lastActivityKey !== npc.activity.activity) {
+      npc.lastActivityKey = npc.activity.activity;
+      const text = ACTIVITY_OBS[npc.activity.activity];
+      if (text) addMemory(state, npc, "observation", text);
+    }
+    // Player within perception radius (cooldown so it isn't logged per tick)
+    const p = state.player;
+    if (Math.hypot(p.x - npc.x, p.y - npc.y) <= PERCEPTION_RADIUS) {
+      const last = npc.perceptionCooldowns.player ?? -Infinity;
+      if (now - last >= PERCEPTION_COOLDOWN_MIN) {
+        npc.perceptionCooldowns.player = now;
+        addMemory(state, npc, "observation",
+          `Noticed the player nearby ${PLACE_PHRASE[npc.activity.place]}.`);
+      }
+    }
+  }
+
+  // ---- Mara (agent schema per plan §6 + runtime state) ----------------
+  // Phase 1: schedule is a hardcoded anchor loop. Fable 5 planning
+  // replaces `current_plan` generation in Phase 3.
+  const MARA_ANCHORS = [
+    // [time, activity, place, label shown above her head]
+    ["06:00", "wake",          "home",   "waking up"],
+    ["07:00", "open_shop",     "bakery", "opening the bakery"],
+    ["08:00", "tend_shop",     "bakery", "selling bread"],
+    ["12:00", "market_gossip", "market", "gossiping at the market"],
+    ["13:30", "tend_shop",     "bakery", "selling bread"],
+    ["19:00", "head_home",     "home",   "closing up, heading home"],
+    ["22:00", "sleep",         "home",   "sleeping"],
+  ];
+
+  function createMara() {
+    const bakery = BUILDINGS[0], house = BUILDINGS[1];
+    return {
+      // static sheet (plan §6 agent schema)
+      id: "npc_mara", name: "Mara", role: "baker",
+      traits: ["warm", "gossipy", "proud"],
+      home: house.id, workplace: bakery.id,
+      schedule_anchors: MARA_ANCHORS.map(([t, a]) => [t, a]),
+      relationships: {
+        player: { affinity: 0.1, summary: "Hasn't formed a strong opinion yet." },
+      },
+      inventory: ["bread_loaf_x4", "spare_key"],
+      // memory stream (plan §6 memory schema objects)
+      memories: [], perceptionCooldowns: {}, lastActivityKey: null,
+      // runtime
+      x: house.door.x, y: house.door.y, dir: "down",
+      path: null, pathKey: null, talking: false,
+      speed: 3.2, // tiles per real second (scaled by timeScale)
+      locations: {
+        home:   { x: house.door.x,  y: house.door.y },
+        bakery: { x: bakery.door.x, y: bakery.door.y },
+        market: { x: MARKET_SPOT.x, y: MARKET_SPOT.y },
+      },
+    };
+  }
+
+  function activityAt(minutes) {
+    let cur = MARA_ANCHORS[MARA_ANCHORS.length - 1]; // pre-dawn = still asleep
+    for (const a of MARA_ANCHORS) if (hm(a[0]) <= minutes) cur = a;
+    return { activity: cur[1], place: cur[2], label: cur[3] };
+  }
+
+  // ---- Movement / collision -------------------------------------------
+  function isSolidAt(map, x, y) {
+    const tx = Math.floor(x), ty = Math.floor(y);
+    if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return true;
+    return SOLID.has(map[ty][tx]);
+  }
+
+  // Axis-separated slide for the player; hitbox is a small box at the feet.
+  function moveActor(map, actor, dx, dy) {
+    const HW = 0.28, HH = 0.22;
+    const clear = (x, y) =>
+      !isSolidAt(map, x - HW, y - HH) && !isSolidAt(map, x + HW, y - HH) &&
+      !isSolidAt(map, x - HW, y + HH) && !isSolidAt(map, x + HW, y + HH);
+    if (dx !== 0 && clear(actor.x + dx, actor.y)) actor.x += dx;
+    if (dy !== 0 && clear(actor.x, actor.y + dy)) actor.y += dy;
+  }
+
+  function updateNPC(state, npc, dtReal) {
+    const act = activityAt(state.clock.minutes);
+    npc.activity = act;
+    perceive(state, npc);
+    if (npc.talking) { npc.moving = false; return; }
+    const target = npc.locations[act.place];
+    const distToTarget = Math.hypot(npc.x - target.x, npc.y - target.y);
+    if (distToTarget < 0.1) { npc.path = null; npc.moving = false; return; }
+
+    const pk = `${target.x},${target.y}`;
+    if (!npc.path || npc.pathKey !== pk) {
+      npc.path = findPath(state.map, Math.round(npc.x), Math.round(npc.y), target.x, target.y);
+      npc.pathKey = pk;
+    }
+    if (!npc.path || !npc.path.length) { npc.moving = false; return; }
+
+    let step = npc.speed * dtReal * state.timeScale;
+    npc.moving = step > 0;
+    while (step > 0 && npc.path.length) {
+      const wp = npc.path[0];
+      const dx = wp.x - npc.x, dy = wp.y - npc.y;
+      const d = Math.hypot(dx, dy);
+      if (d < 1e-4) { npc.path.shift(); continue; }
+      if (Math.abs(dx) > Math.abs(dy)) npc.dir = dx > 0 ? "right" : "left";
+      else npc.dir = dy > 0 ? "down" : "up";
+      const mv = Math.min(step, d);
+      npc.x += (dx / d) * mv; npc.y += (dy / d) * mv;
+      step -= mv;
+      if (mv >= d) npc.path.shift();
+    }
+  }
+
+  // ---- State + tick ----------------------------------------------------
+  function createState() {
+    return {
+      map: buildMap(),
+      buildings: BUILDINGS,
+      clock: { day: 1, minutes: hm("06:50") },
+      timeScale: 1,
+      player: { x: 19, y: 20, dir: "down", moving: false, speed: 4.2 },
+      npcs: [createMara()],
+      // Memory infrastructure (Phase 2)
+      memCounter: 1, embedQueue: [], embedder: null,
+      // Cost-ceiling instrumentation (plan §8): fable5 stays ZERO until
+      // Phase 3; embeddings stays zero unless an embedder is configured,
+      // and even then only per write-batch / per retrieval query — never
+      // per tick. Anything that makes a model call must increment these
+      // so the headless harness can catch regressions.
+      modelCalls: { fable5: 0, embeddings: 0 },
+    };
+  }
+
+  function tick(state, dtReal) {
+    const c = state.clock;
+    c.minutes += dtReal * (1440 / DAY_REAL_SECONDS) * state.timeScale;
+    while (c.minutes >= 1440) { c.minutes -= 1440; c.day += 1; }
+    for (const npc of state.npcs) updateNPC(state, npc, dtReal);
+  }
+
+  return {
+    TILE, MAP_W, MAP_H, DAY_REAL_SECONDS, T, SOLID, BUILDINGS, MARKET_SPOT,
+    PERCEPTION_RADIUS, PERCEPTION_COOLDOWN_MIN, EMBED_BATCH,
+    buildMap, findPath, hm, fmtClock, activityAt, createState, tick, moveActor, isSolidAt,
+    absMinutes, fmtTimestamp, scoreImportance, addMemory, cosineSim,
+    setEmbedder, embedText, processEmbedQueue, retrieveMemories,
+  };
+})();
+if (typeof module !== "undefined") module.exports = SIM;
+</script>
+
+<!-- ================================================================
+     BROWSER LAYER — renderer, input, UI. Not loaded headless.
+     ================================================================ -->
+<script>
+(() => {
+  const { TILE, MAP_W, MAP_H, T } = SIM;
+  const state = SIM.createState();
+  const mara = state.npcs[0];
+
+  // ---- Persistence (plan §2: localStorage for solo play) -----------------
+  // Embeddings are stored as base64 Float32 to keep ~600 memories inside
+  // the localStorage quota.
+  const SAVE_KEY = "townsim.save.v2";
+  const API_KEY_KEY = "townsim.openai_key";
+  const vecEnc = (v) => {
+    const u = new Uint8Array(new Float32Array(v).buffer);
+    let s = "";
+    for (let i = 0; i < u.length; i += 4096) s += String.fromCharCode(...u.subarray(i, i + 4096));
+    return btoa(s);
+  };
+  const vecDec = (s) => {
+    const bin = atob(s);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return Array.from(new Float32Array(u.buffer));
+  };
+  function saveGame() {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify({
+        v: 2, clock: state.clock, memCounter: state.memCounter,
+        player: { x: state.player.x, y: state.player.y },
+        mara: {
+          relationships: mara.relationships,
+          perceptionCooldowns: mara.perceptionCooldowns,
+          memories: mara.memories.map((m) =>
+            ({ ...m, embedding: m.embedding ? vecEnc(m.embedding) : null })),
+        },
+      }));
+    } catch (e) { console.warn("save failed", e); }
+  }
+  function loadGame() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (s.v !== 2) return;
+      state.clock = s.clock; state.memCounter = s.memCounter || 1;
+      state.player.x = s.player.x; state.player.y = s.player.y;
+      mara.relationships = s.mara.relationships;
+      mara.perceptionCooldowns = s.mara.perceptionCooldowns || {};
+      mara.memories = s.mara.memories.map((m) =>
+        ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
+      state.embedQueue = mara.memories.filter((m) => !m.embedding);
+      // Snap Mara to her scheduled place and mark the current activity as
+      // already observed so loading doesn't fabricate a transition memory.
+      const act = SIM.activityAt(state.clock.minutes);
+      mara.lastActivityKey = act.activity;
+      const loc = mara.locations[act.place];
+      mara.x = loc.x; mara.y = loc.y;
+    } catch (e) { console.warn("load failed", e); }
+  }
+  loadGame();
+  setInterval(saveGame, 30000);
+  addEventListener("pagehide", saveGame);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) saveGame(); });
+
+  // ---- Embeddings: OpenAI provider + background queue pump ---------------
+  function makeOpenAIEmbedder(key) {
+    return async (texts) => {
+      const res = await fetch("https://api.openai.com/v1/embeddings", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "text-embedding-3-small", input: texts }),
+      });
+      if (!res.ok) throw new Error(`OpenAI embeddings HTTP ${res.status}`);
+      const data = (await res.json()).data;
+      return data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
+    };
+  }
+  if (localStorage.getItem(API_KEY_KEY))
+    SIM.setEmbedder(state, makeOpenAIEmbedder(localStorage.getItem(API_KEY_KEY)));
+  setInterval(async () => {
+    if (!state.embedder || !state.embedQueue.length) return;
+    try { await SIM.processEmbedQueue(state); } catch (e) { console.warn(e.message); }
+  }, 4000);
+
+  window.__DEBUG = { state, SIM }; // inspection hook for the browser test harness
+
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+
+  // ---- Tile atlas (procedural pixel-art placeholders; Kenmi/Higgsfield
+  //      art replaces this atlas in the world-fill phase) ----------------
+  const atlas = document.createElement("canvas");
+  atlas.width = TILE * 9; atlas.height = TILE;
+  {
+    const a = atlas.getContext("2d");
+    const rnd = (() => { let s = 42; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
+    const px = (i, x, y, w, h, c) => { a.fillStyle = c; a.fillRect(i * TILE + x, y, w, h); };
+    const speckle = (i, base, dots, n) => {
+      px(i, 0, 0, TILE, TILE, base);
+      a.fillStyle = dots;
+      for (let k = 0; k < n; k++) a.fillRect(i * TILE + (rnd() * TILE) | 0, (rnd() * TILE) | 0, 1, 1);
+    };
+    speckle(T.GRASS, "#4f9648", "#437f3d", 12);
+    speckle(T.PATH, "#c8a76a", "#b3915a", 10);
+    px(T.WATER, 0, 0, TILE, TILE, "#3d7cc9");
+    px(T.WATER, 2, 4, 5, 1, "#7fb2e8"); px(T.WATER, 9, 10, 4, 1, "#7fb2e8");
+    speckle(T.TREE, "#4f9648", "#437f3d", 8);
+    px(T.TREE, 7, 11, 3, 4, "#6d4a2f");
+    px(T.TREE, 3, 2, 10, 9, "#2f6b34"); px(T.TREE, 5, 1, 6, 2, "#2f6b34");
+    px(T.TREE, 5, 3, 4, 3, "#3d8043");
+    px(T.WALL, 0, 0, TILE, TILE, "#e6d5ad");
+    px(T.WALL, 0, 0, TILE, 2, "#8a6a45"); px(T.WALL, 0, 14, TILE, 2, "#8a6a45");
+    px(T.WALL, 3, 4, 4, 5, "#7fb2e8"); px(T.WALL, 3, 4, 4, 1, "#5c452c");
+    px(T.ROOF, 0, 0, TILE, TILE, "#b5563d");
+    for (let r = 0; r < 4; r++) px(T.ROOF, 0, r * 4, TILE, 1, "#96432f");
+    px(T.DOOR, 0, 0, TILE, TILE, "#e6d5ad");
+    px(T.DOOR, 3, 2, 10, 14, "#7a5230"); px(T.DOOR, 4, 3, 8, 12, "#8f6238");
+    px(T.DOOR, 11, 9, 2, 2, "#e8c266");
+    px(T.STALL, 0, 0, TILE, TILE, "#c8a76a");
+    px(T.STALL, 1, 6, 14, 8, "#8f6238"); px(T.STALL, 2, 7, 12, 3, "#c9803a");
+    px(T.STALL, 1, 1, 14, 4, "#d94f45");
+    px(T.STALL, 1, 1, 3, 4, "#f2ead8"); px(T.STALL, 7, 1, 3, 4, "#f2ead8"); px(T.STALL, 13, 1, 2, 4, "#f2ead8");
+    speckle(T.FLOWER, "#4f9648", "#437f3d", 10);
+    px(T.FLOWER, 3, 4, 2, 2, "#e86a8a"); px(T.FLOWER, 10, 9, 2, 2, "#f0d05a");
+    px(T.FLOWER, 6, 12, 2, 2, "#e8e6f0");
+  }
+
+  // Prerender the static map once.
+  const mapCanvas = document.createElement("canvas");
+  mapCanvas.width = MAP_W * TILE; mapCanvas.height = MAP_H * TILE;
+  {
+    const m = mapCanvas.getContext("2d");
+    for (let y = 0; y < MAP_H; y++)
+      for (let x = 0; x < MAP_W; x++)
+        m.drawImage(atlas, state.map[y][x] * TILE, 0, TILE, TILE, x * TILE, y * TILE, TILE, TILE);
+  }
+
+  // ---- Character sprites ------------------------------------------------
+  function drawChar(g, cx, cy, pal, dir, walkFrame, bob) {
+    const x = Math.round(cx * TILE - 6), y = Math.round(cy * TILE - 12 + bob);
+    g.fillStyle = "rgba(0,0,0,.25)"; g.fillRect(x + 2, Math.round(cy * TILE) + 1, 8, 2);
+    const legShift = walkFrame ? 1 : 0;
+    g.fillStyle = pal.pants;
+    g.fillRect(x + 3, y + 12 - legShift, 2, 4 + legShift);
+    g.fillRect(x + 7, y + 12 + (walkFrame ? -0 : -1), 2, 4);
+    g.fillStyle = pal.tunic; g.fillRect(x + 2, y + 6, 8, 6);
+    if (pal.apron) { g.fillStyle = pal.apron; g.fillRect(x + 4, y + 7, 4, 5); }
+    g.fillStyle = "#f0c8a0"; g.fillRect(x + 3, y + 1, 6, 5);
+    g.fillStyle = pal.hair;
+    g.fillRect(x + 2, y, 8, 2); g.fillRect(x + 2, y + 1, 2, 3); g.fillRect(x + 8, y + 1, 2, 3);
+    if (dir !== "up") {
+      g.fillStyle = "#2b2233";
+      const eo = dir === "left" ? -1 : dir === "right" ? 1 : 0;
+      g.fillRect(x + 4 + eo, y + 3, 1, 1); g.fillRect(x + 7 + eo, y + 3, 1, 1);
+    }
+  }
+  const PAL_PLAYER = { hair: "#c98f3a", tunic: "#3a6ea8", pants: "#43354f" };
+  const PAL_MARA   = { hair: "#4a3226", tunic: "#a8503a", pants: "#5c452c", apron: "#f2ead8" };
+
+  // ---- Day/night tint keyframes (minute, [r,g,b,alpha]) ------------------
+  const TINT_KEYS = [
+    [0,    [22, 26, 82, 0.48]], [300, [22, 26, 82, 0.48]],  // deep night → 05:00
+    [390,  [190, 120, 70, 0.18]],                            // 06:30 dawn glow
+    [450,  [0, 0, 0, 0]], [1050, [0, 0, 0, 0]],              // 07:30–17:30 clear day
+    [1140, [200, 100, 50, 0.22]],                             // 19:00 dusk
+    [1260, [22, 26, 82, 0.48]], [1440, [22, 26, 82, 0.48]],  // 21:00 → night
+  ];
+  function tintAt(min) {
+    for (let i = 0; i < TINT_KEYS.length - 1; i++) {
+      const [t0, c0] = TINT_KEYS[i], [t1, c1] = TINT_KEYS[i + 1];
+      if (min >= t0 && min <= t1) {
+        const f = t1 === t0 ? 0 : (min - t0) / (t1 - t0);
+        return c0.map((v, j) => v + (c1[j] - v) * f);
+      }
+    }
+    return [0, 0, 0, 0];
+  }
+
+  // ---- Input: keyboard + virtual joystick --------------------------------
+  const keys = new Set();
+  addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT" || e.repeat) return;
+    keys.add(e.key.toLowerCase());
+    if (e.key.toLowerCase() === "e") tryTalk();
+    if (e.key.toLowerCase() === "t") state.timeScale = state.timeScale === 1 ? 10 : 1;
+    if (e.key.toLowerCase() === "m") togglePanel(memPanel);
+    if (e.key === "Escape") { memPanel.style.display = "none"; settingsPanel.style.display = "none"; }
+  });
+  addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+
+  const joy = { active: false, id: null, bx: 0, by: 0, dx: 0, dy: 0 };
+  canvas.addEventListener("pointerdown", (e) => {
+    if (dialogueOpen) { advanceDialogue(); return; }
+    joy.active = true; joy.id = e.pointerId; joy.bx = e.clientX; joy.by = e.clientY;
+    joy.dx = 0; joy.dy = 0;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!joy.active || e.pointerId !== joy.id) return;
+    const dx = e.clientX - joy.bx, dy = e.clientY - joy.by;
+    const d = Math.hypot(dx, dy), max = 48;
+    const f = d > 6 ? Math.min(d, max) / max / (d || 1) : 0;
+    joy.dx = dx * f; joy.dy = dy * f;
+  });
+  const endJoy = (e) => { if (e.pointerId === joy.id) { joy.active = false; joy.dx = joy.dy = 0; } };
+  canvas.addEventListener("pointerup", endJoy);
+  canvas.addEventListener("pointercancel", endJoy);
+
+  // ---- Dialogue (hardcoded placeholder — Fable 5 voice layer is Phase 3) --
+  const dlg = document.getElementById("dialogue");
+  const promptEl = document.getElementById("prompt");
+  const talkbtn = document.getElementById("talkbtn");
+  let dialogueOpen = false, dialogueLines = [], dialogueIdx = 0;
+
+  const LINES = {
+    open_shop:     ["Give me a minute — the ovens barely have their eyes open.",
+                    "First batch goes in at seven sharp. Proud of that, always have been."],
+    tend_shop:     ["Fresh loaves! Well — they will be, once the next batch is out.",
+                    "You're new around here, aren't you? I never forget a face. Usually."],
+    market_gossip: ["You didn't hear it from me, but keep an eye on that stall on the corner.",
+                    "The market's where the real news rises. Bread's just my excuse."],
+    head_home:     ["Long day. My feet are complaining louder than the gulls.",
+                    "Come by the bakery tomorrow — doors open at seven."],
+    wake:          ["*yawns* Bit early for a chat, isn't it?"],
+  };
+
+  function nearMara() { return Math.hypot(state.player.x - mara.x, state.player.y - mara.y) < 1.7; }
+
+  // Memory panel / settings panel wiring
+  const memPanel = document.getElementById("mempanel");
+  const settingsPanel = document.getElementById("settings");
+  const togglePanel = (p) => {
+    const open = p.style.display === "block";
+    memPanel.style.display = settingsPanel.style.display = "none";
+    p.style.display = open ? "none" : "block";
+  };
+  document.getElementById("membtn").addEventListener("pointerdown", (e) => { e.stopPropagation(); togglePanel(memPanel); });
+  document.getElementById("gearbtn").addEventListener("pointerdown", (e) => { e.stopPropagation(); togglePanel(settingsPanel); });
+
+  document.getElementById("savekey").addEventListener("click", () => {
+    const k = document.getElementById("keyinput").value.trim();
+    if (!k) return;
+    localStorage.setItem(API_KEY_KEY, k);
+    SIM.setEmbedder(state, makeOpenAIEmbedder(k));
+    document.getElementById("keyinput").value = "";
+  });
+  document.getElementById("clearkey").addEventListener("click", () => {
+    localStorage.removeItem(API_KEY_KEY);
+    SIM.setEmbedder(state, null);
+  });
+  document.getElementById("resetsave").addEventListener("click", () => {
+    if (confirm("Wipe the town's save data (memories, clock, positions)?")) {
+      localStorage.removeItem(SAVE_KEY);
+      location.reload();
+    }
+  });
+
+  let lastRetrieval = null;
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  function renderMemPanel() {
+    const status = document.getElementById("embedstatus");
+    const embedded = mara.memories.filter((m) => m.embedding).length;
+    status.textContent = `Key: ${state.embedder ? "configured" : "not set"} · ` +
+      `memories: ${mara.memories.length} (${embedded} embedded, ${state.embedQueue.length} queued) · ` +
+      `API calls: ${state.modelCalls.embeddings} embed, ${state.modelCalls.fable5} fable5`;
+    if (memPanel.style.display !== "block") return;
+    const lr = document.getElementById("lastretrieval");
+    if (lastRetrieval) {
+      lr.innerHTML = `<b>Retrieval</b> · query: "${esc(lastRetrieval.query)}"` +
+        ` · ${lastRetrieval.usedEmbedding ? "embedded query" : "recency+importance only (no embeddings)"}<br>` +
+        lastRetrieval.results.map((r) =>
+          `<span class="score">${r.score.toFixed(2)}</span> ` +
+          `<span class="meta">(r ${r.recency.toFixed(2)} · i ${r.importance.toFixed(2)} · v ${r.relevance.toFixed(2)})</span> ` +
+          esc(r.memory.text)).join("<br>");
+    }
+    document.getElementById("memlist").innerHTML = mara.memories.slice(-30).reverse().map((m) =>
+      `<div class="mem"><span class="meta">${m.timestamp} · ${m.type} · imp ${m.importance}` +
+      `${m.embedding ? " · ✓emb" : ""}</span><br>${esc(m.text)}</div>`).join("");
+  }
+  setInterval(renderMemPanel, 700);
+
+  async function runRetrievalDemo(queryText) {
+    let queryVec = null;
+    try { queryVec = await SIM.embedText(state, queryText); }
+    catch (e) { console.warn("query embed failed:", e.message); }
+    lastRetrieval = {
+      query: queryText, usedEmbedding: !!queryVec,
+      results: SIM.retrieveMemories(state, mara, { queryVec, N: 5 }),
+    };
+    renderMemPanel();
+  }
+
+  function tryTalk() {
+    if (dialogueOpen) { advanceDialogue(); return; }
+    if (!nearMara() || mara.activity.activity === "sleep") return;
+    // The chat itself becomes a memory, linked to her latest sighting of the player
+    const seen = [...mara.memories].reverse().find((m) => /player/i.test(m.text));
+    SIM.addMemory(state, mara, "dialogue",
+      `The player stopped to chat while I was ${mara.activity.label}.`,
+      { related_ids: seen ? [seen.id] : [] });
+    runRetrievalDemo(`Chatting with the player while ${mara.activity.label}`);
+    dialogueLines = [...(LINES[mara.activity.activity] || LINES.tend_shop),
+                     "(placeholder small talk — the Fable 5 voice layer arrives in Phase 3; her memory stream is already recording this chat — press M to see it)"];
+    dialogueIdx = 0; dialogueOpen = true; mara.talking = true;
+    dlg.querySelector(".who").textContent = "Mara — baker";
+    dlg.querySelector(".line").textContent = dialogueLines[0];
+    dlg.style.display = "block";
+    mara.dir = state.player.x < mara.x ? "left" : state.player.x > mara.x ? "right"
+             : state.player.y < mara.y ? "up" : "down";
+  }
+  function advanceDialogue() {
+    dialogueIdx++;
+    if (dialogueIdx >= dialogueLines.length) {
+      dialogueOpen = false; mara.talking = false; dlg.style.display = "none";
+    } else dlg.querySelector(".line").textContent = dialogueLines[dialogueIdx];
+  }
+  dlg.addEventListener("pointerdown", (e) => { e.stopPropagation(); advanceDialogue(); });
+  talkbtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); tryTalk(); });
+
+  // ---- Main loop -----------------------------------------------------------
+  let zoom = 2;
+  function resize() {
+    canvas.width = innerWidth; canvas.height = innerHeight;
+    zoom = Math.max(2, Math.round(innerHeight / (TILE * 13)));
+    ctx.imageSmoothingEnabled = false;
+  }
+  addEventListener("resize", resize); resize();
+
+  const clockEl = document.getElementById("clock");
+  let last = performance.now(), walkTimer = 0;
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    SIM.tick(state, dt);
+
+    // Player movement
+    const p = state.player;
+    let mx = (keys.has("d") || keys.has("arrowright") ? 1 : 0) - (keys.has("a") || keys.has("arrowleft") ? 1 : 0);
+    let my = (keys.has("s") || keys.has("arrowdown") ? 1 : 0) - (keys.has("w") || keys.has("arrowup") ? 1 : 0);
+    mx += joy.dx; my += joy.dy;
+    const md = Math.hypot(mx, my);
+    p.moving = md > 0.01 && !dialogueOpen;
+    if (p.moving) {
+      const s = p.speed * dt / Math.max(1, md);
+      SIM.moveActor(state.map, p, mx * s, my * s);
+      p.dir = Math.abs(mx) > Math.abs(my) ? (mx > 0 ? "right" : "left") : (my > 0 ? "down" : "up");
+      walkTimer += dt;
+    }
+
+    // Camera
+    const vw = canvas.width / zoom, vh = canvas.height / zoom;
+    const camX = Math.max(0, Math.min(MAP_W * TILE - vw, p.x * TILE - vw / 2));
+    const camY = Math.max(0, Math.min(MAP_H * TILE - vh, p.y * TILE - vh / 2));
+
+    // Draw
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#1a1626"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(zoom, 0, 0, zoom, -camX * zoom, -camY * zoom);
+    ctx.drawImage(mapCanvas, 0, 0);
+
+    // Actors, y-sorted
+    const walkFrame = Math.floor(walkTimer * 8) % 2 === 0;
+    const npcFrame = Math.floor(now / 140) % 2 === 0;
+    const actors = [
+      { y: p.y, draw: () => drawChar(ctx, p.x, p.y, PAL_PLAYER, p.dir, p.moving && walkFrame, 0) },
+      { y: mara.y, draw: () => drawChar(ctx, mara.x, mara.y, PAL_MARA, mara.dir, mara.moving && npcFrame,
+          mara.activity.activity === "sleep" ? 0 : (!mara.moving ? Math.sin(now / 400) * 0.8 : 0)) },
+    ].sort((a, b) => a.y - b.y);
+    for (const a of actors) a.draw();
+
+    // Day/night tint
+    const [tr, tg, tb, ta] = tintAt(state.clock.minutes);
+    if (ta > 0.001) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = `rgba(${tr | 0},${tg | 0},${tb | 0},${ta})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(zoom, 0, 0, zoom, -camX * zoom, -camY * zoom);
+    }
+
+    // Labels (legibility pillar: always show what Mara is doing)
+    ctx.font = "5px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    const label = (wx, wy, text, color) => {
+      const w = ctx.measureText(text).width + 4;
+      ctx.fillStyle = "rgba(20,16,38,.75)";
+      ctx.fillRect(wx * TILE - w / 2, wy * TILE, w, 7);
+      ctx.fillStyle = color; ctx.fillText(text, wx * TILE, wy * TILE + 5);
+    };
+    for (const b of state.buildings)
+      label(b.rect.x + b.rect.w / 2, b.rect.y - 0.9, b.name, "#f2ead8");
+    label(mara.x, mara.y - 1.6,
+      mara.activity.activity === "sleep" ? "Mara · z z z" : `Mara · ${mara.activity.label}`, "#ffcf6e");
+
+    // Joystick overlay
+    if (joy.active) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.strokeStyle = "rgba(242,234,216,.5)"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(joy.bx, joy.by, 48, 0, 7); ctx.stroke();
+      ctx.fillStyle = "rgba(242,234,216,.6)";
+      ctx.beginPath(); ctx.arc(joy.bx + joy.dx * 48, joy.by + joy.dy * 48, 16, 0, 7); ctx.fill();
+    }
+
+    // HUD
+    clockEl.textContent = `Day ${state.clock.day} — ${SIM.fmtClock(state.clock.minutes)}` +
+                          (state.timeScale !== 1 ? `  ×${state.timeScale}` : "");
+    const canTalk = nearMara() && mara.activity.activity !== "sleep" && !dialogueOpen;
+    promptEl.style.display = canTalk ? "block" : "none";
+    if (canTalk) promptEl.textContent = "E — talk to Mara";
+    talkbtn.style.display = canTalk && "ontouchstart" in window ? "flex" : "none";
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
