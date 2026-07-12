@@ -23,11 +23,15 @@ let failures = 0;
 const fail = (msg) => { failures++; console.error(`FAIL: ${msg}`); };
 const near = (a, b, r = 1.5) => Math.hypot(a.x - b.x, a.y - b.y) <= r;
 
-// Spot checks: at these times Mara must be at (or within 1.5 tiles of) the
-// location her schedule anchors demand. Times leave travel slack after each
-// anchor fires.
+// Spot checks: at these times Mara must be where her schedule anchors
+// demand — inside the bakery (working a station) or near a fixed spot.
+// Times leave travel slack after each anchor fires.
+const bakery = SIM.BUILDINGS[0];
 const CHECKS = [
-  ["09:00", "bakery"], ["12:45", "market"], ["15:00", "bakery"], ["23:00", "home"],
+  ["09:00", "inside the bakery", () => SIM.insideBuilding(bakery, mara.x, mara.y)],
+  ["12:45", "at the market", () => near(mara, mara.locations.market)],
+  ["15:00", "inside the bakery", () => SIM.insideBuilding(bakery, mara.x, mara.y)],
+  ["23:00", "at home", () => near(mara, mara.locations.home)],
 ];
 
 let lastMin = state.clock.minutes;
@@ -44,16 +48,16 @@ for (let i = 0; i < totalSteps; i++) {
     { fail(`NaN position at day ${day} ${SIM.fmtClock(minutes)}`); break; }
 
   // Scheduled-location spot checks (fire once when the clock crosses each mark)
-  for (const [t, place] of CHECKS) {
+  for (const [t, desc, ok] of CHECKS) {
     const mark = SIM.hm(t);
     const crossed = day === lastDay ? (lastMin < mark && minutes >= mark)
                                     : (lastMin < mark + 1440 && minutes + 1440 >= mark + 1440);
-    if (crossed && !near(mara, mara.locations[place]))
-      fail(`day ${day} ${t}: Mara should be at ${place}, is at (${mara.x.toFixed(1)}, ${mara.y.toFixed(1)}) doing "${mara.activity.label}"`);
+    if (crossed && !ok())
+      fail(`day ${day} ${t}: Mara should be ${desc}, is at (${mara.x.toFixed(1)}, ${mara.y.toFixed(1)}) doing "${mara.activity.label}"`);
   }
 
   // Stuck detection: far from target but not moving for >10 sim minutes
-  const target = mara.locations[mara.activity.place];
+  const target = mara.currentTarget || mara.locations[mara.activity.place];
   const dMin = minutes - lastMin + (day !== lastDay ? 1440 : 0);
   if (!near(mara, target, 0.2)) {
     if (Math.hypot(mara.x - stuck.x, mara.y - stuck.y) < 0.05) {
@@ -93,6 +97,17 @@ for (let i = 1; i < sightings.length; i++)
 const top = SIM.retrieveMemories(state, mara, { N: 5 });
 if (top.length !== 5 || !top.every((r) => Number.isFinite(r.score)))
   fail("retrieval fallback (no embeddings) broken");
+
+// Workstation micro-routine: oven sessions logged, bounded per day
+const ovenMems = mems.filter((m) => m.text.includes("batch of loaves"));
+if (ovenMems.length < DAYS || ovenMems.length > 8 * DAYS)
+  fail(`oven-session memories off: ${ovenMems.length} over ${DAYS} days`);
+
+// Without an LLM the default plan stays and no fable5 call is attempted
+if (mara.needsPlan !== true)
+  fail("needsPlan should stay raised when no LLM is configured");
+if (mara.current_plan.length !== 7)
+  fail("default plan should be unchanged without an LLM");
 
 // ---- Mock-embedder run: pipeline + batching cost ceiling ------------------
 const mockEmbed = async (texts) => texts.map((t) => {

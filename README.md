@@ -16,13 +16,21 @@ python3 -m http.server 8000   # then visit http://localhost:8000
 
 Controls: **WASD / arrows** move · **E** talk · **M** memory stream · **T** toggle time ×10 · touch: drag anywhere for a virtual joystick, tap TALK.
 
-### Memory embeddings (optional)
+### API keys (optional — the sim runs without them)
 
-Open the ⚙ settings panel and paste an OpenAI API key to enable memory
-embeddings (`text-embedding-3-small`). The key lives only in your browser's
-localStorage — never in the repo. Without a key the sim runs fine: memories
-still accrue and retrieval scores on recency + importance until embeddings
-exist. Game state (memories included) auto-saves to localStorage; "Reset save
+Open the ⚙ settings panel to add keys. Both live only in your browser's
+localStorage — never in the repo.
+
+- **Anthropic key** — enables the Fable 5 voice layer (`claude-fable-5`, with a
+  server-side fallback to `claude-opus-4-8` on safety-classifier false
+  positives): Mara plans her own day each in-game morning (~1 call/day), you
+  can talk to her in free text (1 call/turn), and high-importance events —
+  like telling her about a theft — trigger an escalated re-plan (cooldown-
+  limited). Without it: fallback schedule + canned dialogue.
+- **OpenAI key** — enables memory embeddings (`text-embedding-3-small`).
+  Without it, retrieval scores on recency + importance.
+
+Game state (memories, plan, clock) auto-saves to localStorage; "Reset save
 data" in settings wipes it.
 
 ## Testing
@@ -32,6 +40,7 @@ pure logic, no DOM — so the headless harness runs the exact shipped code in No
 
 ```sh
 node test/retrieval.mjs       # retrieval math vs a hand-written memory log
+node test/planning.mjs        # plan validation, prompts, dialogue, re-plan (mock LLM)
 node test/headless.mjs        # 3 simulated days (default)
 node test/headless.mjs 7      # a full week
 ```
@@ -42,11 +51,19 @@ hand-written memory log with hand-computed expected top-N orderings, plus the
 importance heuristic, cosine similarity, and embed-queue mechanics — no live
 model calls involved.
 
-`headless.mjs` runs simulated days: NPC at the scheduled place at spot-check
-times, never stuck en route, no NaN drift, day rollover, memory volume bounds,
-perception cooldowns, no orphaned `related_ids`, and the cost ceiling — zero
-model calls with no provider configured, and with a mock embedder only batched
-per-write calls (never per-tick), `fable5` still zero (instrumented via
+`planning.mjs` validates the Fable 5 layer offline: plan JSON parsing +
+validation (chronology, known places, must end asleep at home), prompt
+construction (§7 discipline: sheet + retrieved memories + tight format), a
+mock plan actually steering Mara's movement, dialogue turns becoming memories,
+and the interruption → re-plan path with its cooldown. Invalid or failed plan
+calls always fall back to the previous plan.
+
+`headless.mjs` runs simulated days: NPC at the scheduled place (or inside the
+bakery working a station) at spot-check times, never stuck en route, no NaN
+drift, day rollover, memory volume bounds, perception cooldowns, oven-session
+bounds, no orphaned `related_ids`, and the cost ceiling — zero model calls
+with no provider configured, and with a mock embedder only batched per-write
+calls (never per-tick), `fable5` still zero (instrumented via
 `state.modelCalls`).
 
 ## Build phases (plan §9)
@@ -59,8 +76,12 @@ per-write calls (never per-tick), `fable5` still zero (instrumented via
       `text-embedding-3-small` pipeline with batched queue, recency/importance/relevance
       retrieval validated against a hand-written memory log, memory inspector
       panel (M), localStorage persistence, key entry via settings panel.
-- [ ] **3. Planning + dialogue** — Fable 5 for daily plans and conversation; single NPC
-      end-to-end, including interruption/re-plan.
+- [x] **3. Planning + dialogue** — Fable 5 (`claude-fable-5` + Opus fallback) generates
+      Mara's daily schedule each morning and answers free-text conversation fed by
+      `retrieveMemories()`; high-importance perceptions escalate to a re-plan
+      (threshold check is free, cooldown-limited). Bakery got a cutaway interior
+      (oven / counter / kneading table / shelves) with a deterministic workstation
+      rotation. Strict plan validation with fallback to the previous schedule.
 - [ ] **4. Scale cast** — full roster (6–8), relationship graph, reflection cadence.
 - [ ] **5. World fill** — remaining buildings, items, shop hours, pathfinding polish.
 - [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
@@ -72,9 +93,13 @@ per-write calls (never per-tick), `fable5` still zero (instrumented via
   Current pixel art is procedural placeholder; Kenmi Cute Fantasy / curated
   Higgsfield assets replace the atlas in Phase 5.
 - Agent/building/memory objects follow the plan §6 schemas.
-- The embedding provider is injected (`SIM.setEmbedder`): the browser wires
-  OpenAI when a key exists, the headless harness wires a deterministic mock,
-  and the default is none — so cosine similarity, batching, and retrieval are
-  all testable offline. `state.modelCalls` counts every provider call.
-- NPC dialogue is hardcoded placeholder small talk — the Fable 5 voice layer
-  (Phase 3) will consume `retrieveMemories()` output, which already works.
+- Both model providers are injected (`SIM.setEmbedder` / `SIM.setLLM`): the
+  browser wires OpenAI/Anthropic when keys exist, tests wire deterministic
+  mocks, and the default is none — retrieval, plan validation, dialogue, and
+  re-plan logic are all testable offline. `state.modelCalls` counts every
+  provider call.
+- Fable 5 calls are rationed per plan §7: 1 planning call/NPC/day, 1 call per
+  player-initiated dialogue turn, and re-plans only when a perception clears
+  the importance threshold (cheap check) and the cooldown. Prompts are terse
+  and structured; plan output is strictly validated and falls back to the
+  previous schedule on any failure.

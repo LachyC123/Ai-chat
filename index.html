@@ -57,28 +57,48 @@
 <div class="hud" id="clock"></div>
 <div class="hud" id="hint">WASD / arrows — move &nbsp;·&nbsp; E — talk &nbsp;·&nbsp; M — memories &nbsp;·&nbsp; T — time ×10</div>
 <div class="hud" id="prompt"></div>
-<div id="dialogue"><div class="who"></div><div class="line"></div><div class="more">tap / E</div></div>
+<div id="dialogue">
+  <div class="who"></div><div class="line"></div>
+  <div id="dlgcontrols" style="display:none; margin-top:8px">
+    <input id="dlginput" type="text" maxlength="200" placeholder="Say something…" autocomplete="off"
+           style="width:100%; box-sizing:border-box; background:#14102a; color:#f2ead8;
+                  border:1px solid #7a6aa8; border-radius:6px; padding:6px 8px; font:inherit">
+    <div style="margin-top:6px">
+      <button id="dlgsend" style="background:#3a2f5c; color:#ffcf6e; border:1px solid #7a6aa8;
+              border-radius:6px; padding:4px 12px; font:inherit; cursor:pointer">Say</button>
+      <button id="dlgleave" style="background:#2a2344; color:#f2ead8; border:1px solid #7a6aa8;
+              border-radius:6px; padding:4px 12px; font:inherit; cursor:pointer">Leave</button>
+    </div>
+  </div>
+  <div class="more">tap / E</div>
+</div>
 <div id="talkbtn">TALK</div>
 <div id="gearbtn" class="cornerbtn" style="right: 12px" title="Settings">⚙</div>
 <div id="membtn" class="cornerbtn" style="right: 56px" title="Memory stream (M)">🧠</div>
 
 <div id="settings" class="panel">
   <h3>Settings</h3>
+  <label>Anthropic API key (Fable 5 — planning &amp; dialogue)</label>
+  <input id="anthropickeyinput" type="password" placeholder="sk-ant-..." autocomplete="off">
   <label>OpenAI API key (memory embeddings only)</label>
   <input id="keyinput" type="password" placeholder="sk-..." autocomplete="off">
   <div>
-    <button id="savekey">Save key</button>
-    <button id="clearkey">Clear key</button>
+    <button id="savekey">Save keys</button>
+    <button id="clearkey">Clear keys</button>
     <button id="resetsave">Reset save data</button>
   </div>
   <div id="embedstatus" style="margin-top:8px"></div>
-  <p class="note">The key never leaves this browser (localStorage) and is used only for
-  <code>text-embedding-3-small</code> calls. Without a key the sim still runs —
-  retrieval scores on recency + importance alone until embeddings exist.</p>
+  <p class="note">Keys never leave this browser (localStorage). Anthropic key powers
+  Mara's daily plans and free-text conversation (<code>claude-fable-5</code>, ~1 planning
+  call/day + 1 call per dialogue turn); OpenAI key powers
+  <code>text-embedding-3-small</code> memory retrieval. Without keys the sim still runs —
+  fallback schedule, canned dialogue, recency+importance retrieval.</p>
 </div>
 
 <div id="mempanel" class="panel">
   <h3>Mara's memory stream</h3>
+  <div id="planview" style="border:1px solid rgba(122,106,168,.5); border-radius:8px;
+       padding:6px 8px; margin-bottom:10px; background:rgba(20,16,38,.5)"></div>
   <div id="lastretrieval">No retrieval yet — talk to Mara (E) to run one.</div>
   <div id="memlist"></div>
 </div>
@@ -91,8 +111,10 @@
 const SIM = (() => {
   const TILE = 16, MAP_W = 40, MAP_H = 28;
   const DAY_REAL_SECONDS = 600;               // 1 in-game day = 10 real minutes
-  const T = { GRASS:0, PATH:1, WATER:2, TREE:3, WALL:4, ROOF:5, DOOR:6, STALL:7, FLOWER:8 };
-  const SOLID = new Set([T.WATER, T.TREE, T.WALL, T.ROOF, T.STALL]);
+  const T = { GRASS:0, PATH:1, WATER:2, TREE:3, WALL:4, ROOF:5, DOOR:6, STALL:7, FLOWER:8,
+              FLOOR:9, OVEN:10, COUNTER:11, SHELF:12, TABLE:13 };
+  const SOLID = new Set([T.WATER, T.TREE, T.WALL, T.ROOF, T.STALL,
+                         T.OVEN, T.COUNTER, T.SHELF, T.TABLE]);
 
   // Deterministic PRNG so map decoration is identical in browser and headless runs.
   function mulberry32(seed) {
@@ -105,12 +127,37 @@ const SIM = (() => {
   }
 
   // ---- Buildings (schema per plan §6) --------------------------------
+  // The bakery is drawn cutaway-style: walls + visible interior with
+  // objects Mara works at. Workstation "stand" spots are the walkable
+  // tiles adjacent to each object.
   const BUILDINGS = [
     { id: "building_bakery", name: "Mara's Bakery", function: "shop", owner: "npc_mara",
-      open_hours: ["07:00", "19:00"], rect: { x: 7, y: 5, w: 7, h: 5 }, door: { x: 10, y: 9 } },
+      open_hours: ["07:00", "19:00"], rect: { x: 6, y: 4, w: 9, h: 8 }, door: { x: 10, y: 11 },
+      interior: {
+        objects: [
+          { tile: "OVEN",    at: [[7, 5], [8, 5]] },
+          { tile: "TABLE",   at: [[12, 5], [13, 5]] },
+          { tile: "COUNTER", at: [[9, 8], [10, 8], [11, 8]] },
+          { tile: "SHELF",   at: [[7, 8], [7, 9]] },
+        ],
+      },
+      workstations: {
+        oven:    { stand: { x: 8, y: 6 },  label: "baking at the oven" },
+        counter: { stand: { x: 10, y: 7 }, label: "serving at the counter" },
+        knead:   { stand: { x: 12, y: 6 }, label: "kneading dough" },
+        shelf:   { stand: { x: 8, y: 8 },  label: "stocking the shelves" },
+      } },
     { id: "building_bakery_house", name: "Mara's House", function: "home", owner: "npc_mara",
       open_hours: null, rect: { x: 27, y: 5, w: 6, h: 4 }, door: { x: 29, y: 8 } },
   ];
+
+  function insideBuilding(b, x, y) {
+    return x >= b.rect.x && x < b.rect.x + b.rect.w && y >= b.rect.y && y < b.rect.y + b.rect.h;
+  }
+  function isOpen(b, minutes) {
+    if (!b.open_hours) return true;
+    return minutes >= hm(b.open_hours[0]) && minutes < hm(b.open_hours[1]);
+  }
 
   const MARKET_SPOT = { x: 19, y: 18 };
 
@@ -132,7 +179,7 @@ const SIM = (() => {
 
     // Paths: main east-west street + spurs to each door and the plaza
     for (let x = 8; x <= 31; x++) set(x, 13, T.PATH);
-    for (let y = 10; y <= 13; y++) set(10, y, T.PATH);        // bakery spur
+    set(10, 12, T.PATH);                                      // bakery spur
     for (let y = 9; y <= 13; y++) set(29, y, T.PATH);         // house spur
     for (let y = 13; y <= 15; y++) set(19, y, T.PATH);        // plaza spur
 
@@ -141,12 +188,23 @@ const SIM = (() => {
       for (let x = 15; x <= 24; x++) set(x, y, T.PATH);
     set(16, 16, T.STALL); set(22, 16, T.STALL); set(24, 19, T.STALL); set(15, 20, T.STALL);
 
-    // Buildings: roof rows on top, wall row in front, one door
+    // Buildings. Interior buildings get a cutaway: wall perimeter, floor
+    // inside, furniture objects. Others get the roof-and-front-wall look.
     for (const b of BUILDINGS) {
       const { x, y, w, h } = b.rect;
-      for (let ry = y; ry < y + h - 1; ry++)
-        for (let rx = x; rx < x + w; rx++) set(rx, ry, T.ROOF);
-      for (let rx = x; rx < x + w; rx++) set(rx, y + h - 1, T.WALL);
+      if (b.interior) {
+        for (let ry = y; ry < y + h; ry++)
+          for (let rx = x; rx < x + w; rx++) {
+            const edge = ry === y || ry === y + h - 1 || rx === x || rx === x + w - 1;
+            set(rx, ry, edge ? T.WALL : T.FLOOR);
+          }
+        for (const obj of b.interior.objects)
+          for (const [ox, oy] of obj.at) set(ox, oy, T[obj.tile]);
+      } else {
+        for (let ry = y; ry < y + h - 1; ry++)
+          for (let rx = x; rx < x + w; rx++) set(rx, ry, T.ROOF);
+        for (let rx = x; rx < x + w; rx++) set(rx, y + h - 1, T.WALL);
+      }
       set(b.door.x, b.door.y, T.DOOR);
     }
 
@@ -241,6 +299,10 @@ const SIM = (() => {
     };
     npc.memories.push(mem);
     state.embedQueue.push(mem);
+    // Reaction/interruption check (plan §3.6): a cheap importance
+    // threshold, never a model call. Escalation to a re-plan happens in
+    // the consumer via takeInterrupt().
+    if (mem.importance >= REPLAN_THRESHOLD) npc.pendingInterrupt = mem;
     return mem;
   }
 
@@ -332,8 +394,9 @@ const SIM = (() => {
   }
 
   // ---- Mara (agent schema per plan §6 + runtime state) ----------------
-  // Phase 1: schedule is a hardcoded anchor loop. Fable 5 planning
-  // replaces `current_plan` generation in Phase 3.
+  // MARA_ANCHORS is the default/fallback schedule. Phase 3: Fable 5
+  // planning replaces npc.current_plan each in-game morning; on any
+  // parse/validation failure the previous plan is kept.
   const MARA_ANCHORS = [
     // [time, activity, place, label shown above her head]
     ["06:00", "wake",          "home",   "waking up"],
@@ -359,22 +422,169 @@ const SIM = (() => {
       inventory: ["bread_loaf_x4", "spare_key"],
       // memory stream (plan §6 memory schema objects)
       memories: [], perceptionCooldowns: {}, lastActivityKey: null,
+      // planning (Phase 3)
+      current_plan: MARA_ANCHORS.map((a) => a.slice()),
+      needsPlan: false, lastPlanDay: 0, planFailures: 0,
+      pendingInterrupt: null, lastReplanAt: null,
+      conversation: [],
       // runtime
       x: house.door.x, y: house.door.y, dir: "down",
       path: null, pathKey: null, talking: false,
+      station: null, stationLabel: null, currentTarget: null,
       speed: 3.2, // tiles per real second (scaled by timeScale)
       locations: {
         home:   { x: house.door.x,  y: house.door.y },
-        bakery: { x: bakery.door.x, y: bakery.door.y },
+        bakery: { x: bakery.workstations.counter.stand.x, y: bakery.workstations.counter.stand.y },
         market: { x: MARKET_SPOT.x, y: MARKET_SPOT.y },
       },
     };
   }
 
-  function activityAt(minutes) {
-    let cur = MARA_ANCHORS[MARA_ANCHORS.length - 1]; // pre-dawn = still asleep
-    for (const a of MARA_ANCHORS) if (hm(a[0]) <= minutes) cur = a;
+  function activityAt(npc, minutes) {
+    const plan = npc.current_plan || MARA_ANCHORS;
+    let cur = plan[plan.length - 1]; // pre-dawn = still asleep
+    for (const a of plan) if (hm(a[0]) <= minutes) cur = a;
     return { activity: cur[1], place: cur[2], label: cur[3] };
+  }
+
+  // In-bakery micro-routine: deterministic workstation rotation so her
+  // behavior is explainable and testable (legibility pillar).
+  const STATION_ROTATION = ["counter", "oven", "counter", "knead", "counter", "shelf"];
+  function stationFor(activity, absMin) {
+    if (activity === "open_shop") return "oven"; // morning batch
+    return STATION_ROTATION[Math.floor(absMin / 40) % STATION_ROTATION.length];
+  }
+
+  // ---- Fable 5: planning + dialogue (plan §3.5, §3.7, §7) --------------
+  // The LLM provider is injected like the embedder: the browser wires the
+  // Anthropic API when a key is configured; tests wire a mock; the default
+  // is none and the sim keeps running on the fallback schedule.
+  const REPLAN_THRESHOLD = 7;      // importance that warrants a re-plan
+  const REPLAN_COOLDOWN_MIN = 120; // sim minutes between re-plan calls
+  const PLACES = ["home", "bakery", "market"];
+
+  function setLLM(state, fn) { state.llm = fn; }
+
+  async function callFable5(state, req) {
+    if (!state.llm) return null;
+    state.modelCalls.fable5++;
+    return state.llm(req); // { system, prompt, maxTokens } -> Promise<string|null>
+  }
+
+  // Prompt construction discipline (plan §7): (a) static sheet,
+  // (b) retrieved memories, (c) tight output-format instruction — terse
+  // and structured so parsing is unit-testable.
+  function buildPlanningPrompt(state, npc, { reason = null, retrieved = [] } = {}) {
+    const system =
+`You plan the day for ${npc.name}, a ${npc.role} in a small town.
+Traits: ${npc.traits.join(", ")}. The bakery is open 07:00-19:00.
+Reply with ONLY a JSON array, no prose, no code fences.
+Each entry: ["HH:MM","activity_id","place","short label"].
+Rules: 4 to 8 entries, strictly chronological; first entry between 05:00 and 08:00; last entry has activity_id "sleep" at home no earlier than 20:00; place must be one of home|bakery|market; activity_id is snake_case; labels under 60 characters.`;
+    const mems = retrieved.map((r) =>
+      `- [imp ${r.memory.importance}] (${r.memory.timestamp}) ${r.memory.text}`).join("\n") || "- (none yet)";
+    const rel = Object.entries(npc.relationships)
+      .map(([k, v]) => `${k}: affinity ${v.affinity} — ${v.summary}`).join("\n");
+    const prompt =
+`Day ${state.clock.day}${reason ? `, ${fmtClock(state.clock.minutes)} — adjust the rest of today's plan. Reason: ${reason}` : ""}.
+Notable memories:
+${mems}
+Relationships:
+${rel}
+Default skeleton to adapt (keep work hours similar unless a memory gives a reason to change):
+${JSON.stringify(MARA_ANCHORS)}`;
+    return { system, prompt };
+  }
+
+  function validatePlan(text) {
+    if (typeof text !== "string") return null;
+    const m = text.match(/\[[\s\S]*\]/); // tolerate prose/fences around the array
+    if (!m) return null;
+    let plan;
+    try { plan = JSON.parse(m[0]); } catch { return null; }
+    if (!Array.isArray(plan) || plan.length < 4 || plan.length > 8) return null;
+    let prev = -1;
+    for (const e of plan) {
+      if (!Array.isArray(e) || e.length !== 4) return null;
+      const [t, act, place, label] = e;
+      if (typeof t !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) return null;
+      const min = hm(t);
+      if (min <= prev) return null;
+      prev = min;
+      if (typeof act !== "string" || !/^[a-z][a-z0-9_]{1,29}$/.test(act)) return null;
+      if (!PLACES.includes(place)) return null;
+      if (typeof label !== "string" || !label.length || label.length > 60) return null;
+    }
+    const first = plan[0], last = plan[plan.length - 1];
+    if (hm(first[0]) < hm("05:00") || hm(first[0]) > hm("08:00")) return null;
+    if (last[1] !== "sleep" || last[2] !== "home" || hm(last[0]) < hm("20:00")) return null;
+    return plan;
+  }
+
+  async function generatePlan(state, npc, { reason = null } = {}) {
+    npc.lastPlanDay = state.clock.day; // set up front so a slow call can't double-fire
+    let queryVec = null;
+    try { queryVec = await embedText(state, "planning my day"); } catch {}
+    const retrieved = retrieveMemories(state, npc,
+      { queryVec, N: 8, weights: { recency: 1, importance: 2, relevance: 1 } });
+    const { system, prompt } = buildPlanningPrompt(state, npc, { reason, retrieved });
+    try {
+      const text = await callFable5(state, { system, prompt, maxTokens: 400 });
+      const plan = validatePlan(text);
+      if (!plan) { npc.planFailures++; return null; } // keep the previous plan
+      npc.current_plan = plan;
+      addMemory(state, npc, "plan",
+        `Planned the day: ${plan.map((p) => `${p[0]} ${p[3]}`).join("; ")}.`,
+        { importance: 3 });
+      return plan;
+    } catch { npc.planFailures++; return null; }
+  }
+
+  // Consume a pending interruption if it clears the re-plan cooldown.
+  function takeInterrupt(state, npc) {
+    const mem = npc.pendingInterrupt;
+    if (!mem) return null;
+    npc.pendingInterrupt = null;
+    const now = absMinutes(state.clock);
+    if (npc.lastReplanAt !== null && now - npc.lastReplanAt < REPLAN_COOLDOWN_MIN) return null;
+    npc.lastReplanAt = now;
+    return mem;
+  }
+
+  function buildDialoguePrompt(state, npc, retrieved, turns, playerText) {
+    const system =
+`You are ${npc.name}, a ${npc.role} in a small pixel-art town. Traits: ${npc.traits.join(", ")}.
+Stay in character. Reply with a single short line of spoken dialogue (under 35 words). No quotation marks, no narration, no stage directions.`;
+    const mems = retrieved.map((r) => `- (${r.memory.timestamp}) ${r.memory.text}`).join("\n")
+      || "- (nothing memorable yet)";
+    const rel = npc.relationships.player;
+    const convo = turns.slice(-6).map((t) => `${t.speaker}: ${t.text}`).join("\n");
+    const prompt =
+`Time: day ${state.clock.day}, ${fmtClock(state.clock.minutes)} — you are ${npc.stationLabel || npc.activity.label}.
+Your relevant memories:
+${mems}
+Relationship with the player: affinity ${rel.affinity} — ${rel.summary}
+Conversation so far:
+${convo ? convo + "\n" : ""}Player: ${playerText}
+${npc.name}:`;
+    return { system, prompt };
+  }
+
+  async function dialogueTurn(state, npc, playerText) {
+    playerText = String(playerText).trim().slice(0, 200);
+    if (!playerText) return null;
+    let queryVec = null;
+    try { queryVec = await embedText(state, playerText); } catch {}
+    const retrieved = retrieveMemories(state, npc, { queryVec, N: 8 });
+    const { system, prompt } = buildDialoguePrompt(state, npc, retrieved, npc.conversation, playerText);
+    const raw = await callFable5(state, { system, prompt, maxTokens: 120 });
+    const line = (raw || "").trim().replace(/^["']+|["']+$/g, "").split("\n")[0].slice(0, 300);
+    if (!line) return null;
+    npc.conversation.push({ speaker: "Player", text: playerText }, { speaker: npc.name, text: line });
+    // The exchange itself becomes a memory; its heuristic importance can
+    // trip the interruption threshold (e.g. the player reports a theft).
+    addMemory(state, npc, "dialogue", `The player said: "${playerText}" I replied: "${line}"`);
+    return { line, retrieved };
   }
 
   // ---- Movement / collision -------------------------------------------
@@ -385,21 +595,58 @@ const SIM = (() => {
   }
 
   // Axis-separated slide for the player; hitbox is a small box at the feet.
+  // When a move is blocked but the center of the current tile column/row
+  // would clear (a 1-tile doorway), nudge toward that center instead —
+  // otherwise doorways require pixel-perfect alignment.
   function moveActor(map, actor, dx, dy) {
-    const HW = 0.28, HH = 0.22;
+    const HW = 0.22, HH = 0.2;
     const clear = (x, y) =>
       !isSolidAt(map, x - HW, y - HH) && !isSolidAt(map, x + HW, y - HH) &&
       !isSolidAt(map, x - HW, y + HH) && !isSolidAt(map, x + HW, y + HH);
-    if (dx !== 0 && clear(actor.x + dx, actor.y)) actor.x += dx;
-    if (dy !== 0 && clear(actor.x, actor.y + dy)) actor.y += dy;
+    if (dx !== 0) {
+      if (clear(actor.x + dx, actor.y)) actor.x += dx;
+      else {
+        const cy = Math.floor(actor.y) + 0.5;
+        if (Math.abs(cy - actor.y) > 1e-3 && clear(actor.x + dx, cy))
+          actor.y += Math.sign(cy - actor.y) * Math.min(Math.abs(dx), Math.abs(cy - actor.y));
+      }
+    }
+    if (dy !== 0) {
+      if (clear(actor.x, actor.y + dy)) actor.y += dy;
+      else {
+        const cx = Math.floor(actor.x) + 0.5;
+        if (Math.abs(cx - actor.x) > 1e-3 && clear(cx, actor.y + dy))
+          actor.x += Math.sign(cx - actor.x) * Math.min(Math.abs(dy), Math.abs(cx - actor.x));
+      }
+    }
   }
 
   function updateNPC(state, npc, dtReal) {
-    const act = activityAt(state.clock.minutes);
+    const act = activityAt(npc, state.clock.minutes);
     npc.activity = act;
     perceive(state, npc);
+
+    // Resolve the movement target: workstations inside the bakery,
+    // otherwise the place's fixed spot.
+    let target;
+    if (act.place === "bakery" && BUILDINGS[0].workstations) {
+      const name = stationFor(act.activity, absMinutes(state.clock));
+      const ws = BUILDINGS[0].workstations[name];
+      target = ws.stand;
+      npc.stationLabel = ws.label;
+      if (npc.station !== name) {
+        npc.station = name;
+        // Only log the oven session once she's actually in the bakery
+        if (name === "oven" && Math.hypot(npc.x - target.x, npc.y - target.y) < 4)
+          addMemory(state, npc, "observation", "Put a fresh batch of loaves in the oven.");
+      }
+    } else {
+      npc.station = null; npc.stationLabel = null;
+      target = npc.locations[act.place];
+    }
+    npc.currentTarget = target;
+
     if (npc.talking) { npc.moving = false; return; }
-    const target = npc.locations[act.place];
     const distToTarget = Math.hypot(npc.x - target.x, npc.y - target.y);
     if (distToTarget < 0.1) { npc.path = null; npc.moving = false; return; }
 
@@ -435,8 +682,8 @@ const SIM = (() => {
       timeScale: 1,
       player: { x: 19, y: 20, dir: "down", moving: false, speed: 4.2 },
       npcs: [createMara()],
-      // Memory infrastructure (Phase 2)
-      memCounter: 1, embedQueue: [], embedder: null,
+      // Memory infrastructure (Phase 2) + LLM provider (Phase 3)
+      memCounter: 1, embedQueue: [], embedder: null, llm: null,
       // Cost-ceiling instrumentation (plan §8): fable5 stays ZERO until
       // Phase 3; embeddings stays zero unless an embedder is configured,
       // and even then only per write-batch / per retrieval query — never
@@ -450,15 +697,24 @@ const SIM = (() => {
     const c = state.clock;
     c.minutes += dtReal * (1440 / DAY_REAL_SECONDS) * state.timeScale;
     while (c.minutes >= 1440) { c.minutes -= 1440; c.day += 1; }
-    for (const npc of state.npcs) updateNPC(state, npc, dtReal);
+    for (const npc of state.npcs) {
+      // Daily planning trigger (plan §3.5): one Fable 5 call per NPC per
+      // in-game morning. The flag is consumed by the planning pump.
+      if (c.minutes >= hm("06:00") && npc.lastPlanDay !== c.day) npc.needsPlan = true;
+      updateNPC(state, npc, dtReal);
+    }
   }
 
   return {
     TILE, MAP_W, MAP_H, DAY_REAL_SECONDS, T, SOLID, BUILDINGS, MARKET_SPOT,
     PERCEPTION_RADIUS, PERCEPTION_COOLDOWN_MIN, EMBED_BATCH,
+    REPLAN_THRESHOLD, REPLAN_COOLDOWN_MIN,
     buildMap, findPath, hm, fmtClock, activityAt, createState, tick, moveActor, isSolidAt,
+    insideBuilding, isOpen,
     absMinutes, fmtTimestamp, scoreImportance, addMemory, cosineSim,
     setEmbedder, embedText, processEmbedQueue, retrieveMemories,
+    setLLM, buildPlanningPrompt, validatePlan, generatePlan, takeInterrupt,
+    buildDialoguePrompt, dialogueTurn,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -478,6 +734,7 @@ if (typeof module !== "undefined") module.exports = SIM;
   // the localStorage quota.
   const SAVE_KEY = "townsim.save.v2";
   const API_KEY_KEY = "townsim.openai_key";
+  const ANTHROPIC_KEY_KEY = "townsim.anthropic_key";
   const vecEnc = (v) => {
     const u = new Uint8Array(new Float32Array(v).buffer);
     let s = "";
@@ -493,11 +750,13 @@ if (typeof module !== "undefined") module.exports = SIM;
   function saveGame() {
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 2, clock: state.clock, memCounter: state.memCounter,
+        v: 3, clock: state.clock, memCounter: state.memCounter,
         player: { x: state.player.x, y: state.player.y },
         mara: {
           relationships: mara.relationships,
           perceptionCooldowns: mara.perceptionCooldowns,
+          current_plan: mara.current_plan, lastPlanDay: mara.lastPlanDay,
+          lastReplanAt: mara.lastReplanAt,
           memories: mara.memories.map((m) =>
             ({ ...m, embedding: m.embedding ? vecEnc(m.embedding) : null })),
         },
@@ -509,17 +768,20 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 2) return;
+      if (s.v !== 2 && s.v !== 3) return;
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
       mara.relationships = s.mara.relationships;
       mara.perceptionCooldowns = s.mara.perceptionCooldowns || {};
+      if (s.mara.current_plan) mara.current_plan = s.mara.current_plan;
+      if (s.mara.lastPlanDay) mara.lastPlanDay = s.mara.lastPlanDay;
+      if (s.mara.lastReplanAt !== undefined) mara.lastReplanAt = s.mara.lastReplanAt;
       mara.memories = s.mara.memories.map((m) =>
         ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
       state.embedQueue = mara.memories.filter((m) => !m.embedding);
       // Snap Mara to her scheduled place and mark the current activity as
       // already observed so loading doesn't fabricate a transition memory.
-      const act = SIM.activityAt(state.clock.minutes);
+      const act = SIM.activityAt(mara, state.clock.minutes);
       mara.lastActivityKey = act.activity;
       const loc = mara.locations[act.place];
       mara.x = loc.x; mara.y = loc.y;
@@ -550,6 +812,59 @@ if (typeof module !== "undefined") module.exports = SIM;
     try { await SIM.processEmbedQueue(state); } catch (e) { console.warn(e.message); }
   }, 4000);
 
+  // ---- Fable 5 via the Anthropic API (Phase 3) ----------------------------
+  // Direct-from-browser call with the user's own key (never committed).
+  // Fable 5 notes: thinking is always on (omit the param), no sampling
+  // params, and safety classifiers can return stop_reason "refusal" — we
+  // opt into the server-side fallback to claude-opus-4-8 so a false
+  // positive doesn't leave an NPC speechless.
+  function makeAnthropicLLM(key) {
+    return async ({ system, prompt, maxTokens }) => {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-beta": "server-side-fallback-2026-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-fable-5",
+          max_tokens: maxTokens ?? 300,
+          fallbacks: [{ model: "claude-opus-4-8" }],
+          output_config: { effort: "low" }, // cheap loop, expensive voice — keep the voice snappy
+          system,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.stop_reason === "refusal") return null; // whole fallback chain declined
+      return data.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+    };
+  }
+  if (localStorage.getItem(ANTHROPIC_KEY_KEY))
+    SIM.setLLM(state, makeAnthropicLLM(localStorage.getItem(ANTHROPIC_KEY_KEY)));
+
+  // Planning pump: daily plan each in-game morning + escalated re-plans on
+  // high-importance interruptions (plan §3.5-3.6).
+  let planningInFlight = false;
+  setInterval(async () => {
+    if (!state.llm || planningInFlight) return;
+    let reason = null;
+    if (!mara.needsPlan) {
+      const interrupt = SIM.takeInterrupt(state, mara);
+      if (!interrupt) return;
+      reason = interrupt.text;
+    }
+    mara.needsPlan = false;
+    planningInFlight = true;
+    try { await SIM.generatePlan(state, mara, { reason }); }
+    catch (e) { console.warn("planning failed:", e.message); }
+    finally { planningInFlight = false; renderMemPanel(); }
+  }, 3000);
+
   window.__DEBUG = { state, SIM }; // inspection hook for the browser test harness
 
   const canvas = document.getElementById("game");
@@ -559,7 +874,7 @@ if (typeof module !== "undefined") module.exports = SIM;
   // ---- Tile atlas (procedural pixel-art placeholders; Kenmi/Higgsfield
   //      art replaces this atlas in the world-fill phase) ----------------
   const atlas = document.createElement("canvas");
-  atlas.width = TILE * 9; atlas.height = TILE;
+  atlas.width = TILE * 14; atlas.height = TILE;
   {
     const a = atlas.getContext("2d");
     const rnd = (() => { let s = 42; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
@@ -592,6 +907,25 @@ if (typeof module !== "undefined") module.exports = SIM;
     speckle(T.FLOWER, "#4f9648", "#437f3d", 10);
     px(T.FLOWER, 3, 4, 2, 2, "#e86a8a"); px(T.FLOWER, 10, 9, 2, 2, "#f0d05a");
     px(T.FLOWER, 6, 12, 2, 2, "#e8e6f0");
+    // Interior tiles
+    px(T.FLOOR, 0, 0, TILE, TILE, "#b08850");
+    for (let r = 0; r < 4; r++) px(T.FLOOR, 0, r * 4 + 3, TILE, 1, "#9a7442");
+    px(T.FLOOR, 8, 0, 1, 4, "#9a7442"); px(T.FLOOR, 4, 8, 1, 4, "#9a7442");
+    px(T.OVEN, 0, 0, TILE, TILE, "#b08850");
+    px(T.OVEN, 1, 0, 14, 14, "#7d7a76"); px(T.OVEN, 2, 1, 12, 12, "#8f8c88");
+    px(T.OVEN, 4, 6, 8, 6, "#3a2b20"); px(T.OVEN, 5, 8, 6, 3, "#e8722c");
+    px(T.OVEN, 6, 9, 4, 2, "#f4a83a");
+    px(T.COUNTER, 0, 0, TILE, TILE, "#b08850");
+    px(T.COUNTER, 0, 2, TILE, 10, "#8f6238"); px(T.COUNTER, 0, 2, TILE, 3, "#a87844");
+    px(T.COUNTER, 3, 3, 4, 2, "#d9a45a"); px(T.COUNTER, 9, 3, 4, 2, "#d9a45a");
+    px(T.SHELF, 0, 0, TILE, TILE, "#b08850");
+    px(T.SHELF, 1, 0, 14, 14, "#6d4a2f");
+    px(T.SHELF, 2, 2, 12, 3, "#8f6238"); px(T.SHELF, 2, 8, 12, 3, "#8f6238");
+    px(T.SHELF, 3, 1, 3, 2, "#d9a45a"); px(T.SHELF, 8, 1, 4, 2, "#d9a45a");
+    px(T.SHELF, 4, 7, 3, 2, "#d9a45a"); px(T.SHELF, 9, 7, 3, 2, "#d9a45a");
+    px(T.TABLE, 0, 0, TILE, TILE, "#b08850");
+    px(T.TABLE, 1, 3, 14, 10, "#a87844"); px(T.TABLE, 1, 3, 14, 2, "#c08c50");
+    px(T.TABLE, 4, 7, 5, 4, "#f2ead8"); px(T.TABLE, 10, 6, 3, 3, "#e8dcc0");
   }
 
   // Prerender the static map once.
@@ -653,13 +987,16 @@ if (typeof module !== "undefined") module.exports = SIM;
     if (e.key.toLowerCase() === "e") tryTalk();
     if (e.key.toLowerCase() === "t") state.timeScale = state.timeScale === 1 ? 10 : 1;
     if (e.key.toLowerCase() === "m") togglePanel(memPanel);
-    if (e.key === "Escape") { memPanel.style.display = "none"; settingsPanel.style.display = "none"; }
+    if (e.key === "Escape") {
+      memPanel.style.display = "none"; settingsPanel.style.display = "none";
+      if (dialogueOpen) closeDialogue();
+    }
   });
   addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 
   const joy = { active: false, id: null, bx: 0, by: 0, dx: 0, dy: 0 };
   canvas.addEventListener("pointerdown", (e) => {
-    if (dialogueOpen) { advanceDialogue(); return; }
+    if (dialogueOpen) { if (!llmMode) advanceDialogue(); return; }
     joy.active = true; joy.id = e.pointerId; joy.bx = e.clientX; joy.by = e.clientY;
     joy.dx = 0; joy.dy = 0;
     canvas.setPointerCapture(e.pointerId);
@@ -675,11 +1012,14 @@ if (typeof module !== "undefined") module.exports = SIM;
   canvas.addEventListener("pointerup", endJoy);
   canvas.addEventListener("pointercancel", endJoy);
 
-  // ---- Dialogue (hardcoded placeholder — Fable 5 voice layer is Phase 3) --
+  // ---- Dialogue: Fable 5 free-text when a key is set; canned fallback ----
   const dlg = document.getElementById("dialogue");
   const promptEl = document.getElementById("prompt");
   const talkbtn = document.getElementById("talkbtn");
-  let dialogueOpen = false, dialogueLines = [], dialogueIdx = 0;
+  const dlgControls = document.getElementById("dlgcontrols");
+  const dlgInput = document.getElementById("dlginput");
+  const dlgMore = dlg.querySelector(".more");
+  let dialogueOpen = false, llmMode = false, dialogueLines = [], dialogueIdx = 0, dlgBusy = false;
 
   const LINES = {
     open_shop:     ["Give me a minute — the ovens barely have their eyes open.",
@@ -693,7 +1033,8 @@ if (typeof module !== "undefined") module.exports = SIM;
     wake:          ["*yawns* Bit early for a chat, isn't it?"],
   };
 
-  function nearMara() { return Math.hypot(state.player.x - mara.x, state.player.y - mara.y) < 1.7; }
+  // 2.2 so you can talk to Mara across the bakery counter
+  function nearMara() { return Math.hypot(state.player.x - mara.x, state.player.y - mara.y) < 2.2; }
 
   // Memory panel / settings panel wiring
   const memPanel = document.getElementById("mempanel");
@@ -707,15 +1048,25 @@ if (typeof module !== "undefined") module.exports = SIM;
   document.getElementById("gearbtn").addEventListener("pointerdown", (e) => { e.stopPropagation(); togglePanel(settingsPanel); });
 
   document.getElementById("savekey").addEventListener("click", () => {
-    const k = document.getElementById("keyinput").value.trim();
-    if (!k) return;
-    localStorage.setItem(API_KEY_KEY, k);
-    SIM.setEmbedder(state, makeOpenAIEmbedder(k));
-    document.getElementById("keyinput").value = "";
+    const ok = document.getElementById("keyinput").value.trim();
+    if (ok) {
+      localStorage.setItem(API_KEY_KEY, ok);
+      SIM.setEmbedder(state, makeOpenAIEmbedder(ok));
+      document.getElementById("keyinput").value = "";
+    }
+    const ak = document.getElementById("anthropickeyinput").value.trim();
+    if (ak) {
+      localStorage.setItem(ANTHROPIC_KEY_KEY, ak);
+      SIM.setLLM(state, makeAnthropicLLM(ak));
+      document.getElementById("anthropickeyinput").value = "";
+    }
+    renderMemPanel();
   });
   document.getElementById("clearkey").addEventListener("click", () => {
     localStorage.removeItem(API_KEY_KEY);
+    localStorage.removeItem(ANTHROPIC_KEY_KEY);
     SIM.setEmbedder(state, null);
+    SIM.setLLM(state, null);
   });
   document.getElementById("resetsave").addEventListener("click", () => {
     if (confirm("Wipe the town's save data (memories, clock, positions)?")) {
@@ -729,10 +1080,15 @@ if (typeof module !== "undefined") module.exports = SIM;
   function renderMemPanel() {
     const status = document.getElementById("embedstatus");
     const embedded = mara.memories.filter((m) => m.embedding).length;
-    status.textContent = `Key: ${state.embedder ? "configured" : "not set"} · ` +
+    status.textContent = `Fable 5: ${state.llm ? "configured" : "not set"} · ` +
+      `embeddings: ${state.embedder ? "configured" : "not set"} · ` +
       `memories: ${mara.memories.length} (${embedded} embedded, ${state.embedQueue.length} queued) · ` +
-      `API calls: ${state.modelCalls.embeddings} embed, ${state.modelCalls.fable5} fable5`;
+      `API calls: ${state.modelCalls.embeddings} embed, ${state.modelCalls.fable5} fable5` +
+      (mara.planFailures ? ` · plan failures: ${mara.planFailures}` : "");
     if (memPanel.style.display !== "block") return;
+    document.getElementById("planview").innerHTML =
+      `<b>Today's plan</b> <span class="meta">(${state.llm && mara.lastPlanDay === state.clock.day && mara.memories.some((m) => m.type === "plan") ? "Fable 5" : "default"})</span><br>` +
+      mara.current_plan.map(([t, , , label]) => `<span class="meta">${t}</span> ${esc(label)}`).join("<br>");
     const lr = document.getElementById("lastretrieval");
     if (lastRetrieval) {
       lr.innerHTML = `<b>Retrieval</b> · query: "${esc(lastRetrieval.query)}"` +
@@ -759,31 +1115,85 @@ if (typeof module !== "undefined") module.exports = SIM;
     renderMemPanel();
   }
 
+  function greetingFor() {
+    return (LINES[mara.activity.activity] || LINES.tend_shop)[0];
+  }
+
   function tryTalk() {
-    if (dialogueOpen) { advanceDialogue(); return; }
+    if (dialogueOpen) { if (!llmMode) advanceDialogue(); return; }
     if (!nearMara() || mara.activity.activity === "sleep") return;
-    // The chat itself becomes a memory, linked to her latest sighting of the player
-    const seen = [...mara.memories].reverse().find((m) => /player/i.test(m.text));
-    SIM.addMemory(state, mara, "dialogue",
-      `The player stopped to chat while I was ${mara.activity.label}.`,
-      { related_ids: seen ? [seen.id] : [] });
-    runRetrievalDemo(`Chatting with the player while ${mara.activity.label}`);
-    dialogueLines = [...(LINES[mara.activity.activity] || LINES.tend_shop),
-                     "(placeholder small talk — the Fable 5 voice layer arrives in Phase 3; her memory stream is already recording this chat — press M to see it)"];
-    dialogueIdx = 0; dialogueOpen = true; mara.talking = true;
-    dlg.querySelector(".who").textContent = "Mara — baker";
-    dlg.querySelector(".line").textContent = dialogueLines[0];
-    dlg.style.display = "block";
+    llmMode = !!state.llm;
+    dialogueOpen = true; mara.talking = true;
     mara.dir = state.player.x < mara.x ? "left" : state.player.x > mara.x ? "right"
              : state.player.y < mara.y ? "up" : "down";
+    dlg.querySelector(".who").textContent = `Mara — baker · ${mara.stationLabel || mara.activity.label}`;
+    dlg.style.display = "block";
+    if (llmMode) {
+      mara.conversation = []; // fresh conversation; memories carry the past
+      dlg.querySelector(".line").textContent = greetingFor();
+      dlgControls.style.display = "block";
+      dlgMore.style.display = "none";
+      dlgInput.value = "";
+      dlgInput.focus();
+    } else {
+      // Canned fallback: no Anthropic key configured
+      const seen = [...mara.memories].reverse().find((m) => /player/i.test(m.text));
+      SIM.addMemory(state, mara, "dialogue",
+        `The player stopped to chat while I was ${mara.stationLabel || mara.activity.label}.`,
+        { related_ids: seen ? [seen.id] : [] });
+      runRetrievalDemo(`Chatting with the player while ${mara.activity.label}`);
+      dialogueLines = [...(LINES[mara.activity.activity] || LINES.tend_shop),
+                       "(canned small talk — add an Anthropic API key in ⚙ settings for real Fable 5 conversation)"];
+      dialogueIdx = 0;
+      dlg.querySelector(".line").textContent = dialogueLines[0];
+      dlgControls.style.display = "none";
+      dlgMore.style.display = "block";
+    }
   }
+
+  function closeDialogue() {
+    dialogueOpen = false; mara.talking = false; dlgBusy = false;
+    dlg.style.display = "none";
+  }
+
   function advanceDialogue() {
     dialogueIdx++;
-    if (dialogueIdx >= dialogueLines.length) {
-      dialogueOpen = false; mara.talking = false; dlg.style.display = "none";
-    } else dlg.querySelector(".line").textContent = dialogueLines[dialogueIdx];
+    if (dialogueIdx >= dialogueLines.length) closeDialogue();
+    else dlg.querySelector(".line").textContent = dialogueLines[dialogueIdx];
   }
-  dlg.addEventListener("pointerdown", (e) => { e.stopPropagation(); advanceDialogue(); });
+
+  async function sendDialogueLine() {
+    const text = dlgInput.value.trim();
+    if (!text || dlgBusy) return;
+    dlgBusy = true;
+    dlgInput.value = "";
+    dlg.querySelector(".line").textContent = "…";
+    try {
+      const result = await SIM.dialogueTurn(state, mara, text);
+      if (!dialogueOpen) return; // player walked away mid-call
+      if (result) {
+        dlg.querySelector(".line").textContent = result.line;
+        lastRetrieval = { query: text, usedEmbedding: !!state.embedder, results: result.retrieved.slice(0, 5) };
+        renderMemPanel();
+      } else {
+        dlg.querySelector(".line").textContent = "…Mara seems lost for words. (the model declined or returned nothing)";
+      }
+    } catch (e) {
+      dlg.querySelector(".line").textContent = `…(dialogue call failed: ${e.message})`;
+    } finally {
+      dlgBusy = false;
+      if (dialogueOpen) dlgInput.focus();
+    }
+  }
+
+  dlg.addEventListener("pointerdown", (e) => { e.stopPropagation(); if (!llmMode) advanceDialogue(); });
+  document.getElementById("dlgsend").addEventListener("click", sendDialogueLine);
+  document.getElementById("dlgleave").addEventListener("click", closeDialogue);
+  dlgInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendDialogueLine();
+    if (e.key === "Escape") closeDialogue();
+    e.stopPropagation();
+  });
   talkbtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); tryTalk(); });
 
   // ---- Main loop -----------------------------------------------------------
@@ -855,10 +1265,13 @@ if (typeof module !== "undefined") module.exports = SIM;
       ctx.fillRect(wx * TILE - w / 2, wy * TILE, w, 7);
       ctx.fillStyle = color; ctx.fillText(text, wx * TILE, wy * TILE + 5);
     };
-    for (const b of state.buildings)
-      label(b.rect.x + b.rect.w / 2, b.rect.y - 0.9, b.name, "#f2ead8");
+    for (const b of state.buildings) {
+      const closed = b.open_hours && !SIM.isOpen(b, state.clock.minutes);
+      label(b.rect.x + b.rect.w / 2, b.rect.y - 0.9, b.name + (closed ? " · closed" : ""), "#f2ead8");
+    }
     label(mara.x, mara.y - 1.6,
-      mara.activity.activity === "sleep" ? "Mara · z z z" : `Mara · ${mara.activity.label}`, "#ffcf6e");
+      mara.activity.activity === "sleep" ? "Mara · z z z"
+        : `Mara · ${mara.stationLabel || mara.activity.label}`, "#ffcf6e");
 
     // Joystick overlay
     if (joy.active) {
