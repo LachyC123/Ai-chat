@@ -4,6 +4,41 @@ A persistent pixel-art town where NPCs have their own daily routines, memories,
 relationships, and free will — built on the Stanford "Generative Agents"
 (Smallville) architecture. Full design doc: [`docs/project-plan.pdf`](docs/project-plan.pdf).
 
+**The cast (v1):** seven characters, each with their own personality, wants,
+and long-term goal — Mara (baker, owns the bakery), Tomas (her assistant),
+Edith (retired seamstress, bakery regular), Constable Bram (patrols, takes
+reports, makes arrests), and the Mudlarks — the town's petty thieving crew:
+Silas ("fisherman", secretly the leader), Ren (lieutenant, best pickpocket in
+town), and Pip (soft-hearted lookout who isn't sure crew life is for him).
+The town has the bakery (full interior), homes for everyone, the constable's
+station with a jail cell, the gang's boat-shed hideout, a market square, and a
+park by the pond.
+
+With an Anthropic key set, everything they do is AI-decided: each character
+plans their own day (skipping work for the park is a valid choice — routines
+are tendencies, not rules), chats with whoever they run into, and remembers
+all of it. Underneath sits a deterministic cause-and-effect layer the AI
+reacts to: pickpocketing at the market → victim and witnesses remember → a
+witness runs into Bram and reports it → culprit is wanted → pursuit on sight →
+arrest → a day in the cell → **the gang hierarchy reshuffles** (an arrest
+drops you below everyone; ranks recompute, promotions become memories, and
+the old boss comes back at the bottom). Every link in that chain writes
+high-importance memories, so plans, conversations, and gossip bend around it.
+
+**The cast (all fully AI-driven when a key is set):**
+- **Mara** — baker and owner of the bakery (warm, gossipy, proud)
+- **Tomas** — her assistant baker (quiet, practical, kind)
+- **Edith** — a retired seamstress (sharp-tongued, nostalgic, kind-hearted) who
+  drops by the bakery for a loaf, browses the market, and relaxes at the park
+
+Nothing is forced: each NPC plans their own day every in-game morning — the
+prompt explicitly tells the model that work is optional and routines are
+tendencies, not rules. If Edith skips the bakery for a park day, that's her
+choice. NPCs perceive each other, chat spontaneously when they meet (content
+entirely model-decided, shown as speech bubbles), remember conversations, and
+the bakery runs like a bakery: staff rotate the oven/counter/shelves, Edith
+buys bread when a worker is around.
+
 **Design pillars:** legibility over scale · memory is the game · cheap loop, expensive voice.
 
 ## Running
@@ -16,13 +51,23 @@ python3 -m http.server 8000   # then visit http://localhost:8000
 
 Controls: **WASD / arrows** move · **E** talk · **M** memory stream · **T** toggle time ×10 · touch: drag anywhere for a virtual joystick, tap TALK.
 
-### Memory embeddings (optional)
+### API keys (optional — the sim runs without them)
 
-Open the ⚙ settings panel and paste an OpenAI API key to enable memory
-embeddings (`text-embedding-3-small`). The key lives only in your browser's
-localStorage — never in the repo. Without a key the sim runs fine: memories
-still accrue and retrieval scores on recency + importance until embeddings
-exist. Game state (memories included) auto-saves to localStorage; "Reset save
+Open the ⚙ settings panel to add keys. Both live only in your browser's
+localStorage — never in the repo.
+
+- **Anthropic key** — enables the Fable 5 autonomy layer (`claude-fable-5`,
+  with a server-side fallback to `claude-opus-4-8` on safety-classifier false
+  positives): every NPC plans their own day each in-game morning (1 call/NPC/
+  day, staggered), NPCs who meet strike up their own conversations (1 call per
+  line, max 4 lines, per-pair cooldown), you can talk to anyone in free text
+  (1 call/turn), and high-importance events — overheard gossip, a theft report
+  — trigger an escalated re-plan (cooldown-limited). Without it: fallback
+  rhythms + canned dialogue, no NPC-to-NPC chatter.
+- **OpenAI key** — enables memory embeddings (`text-embedding-3-small`).
+  Without it, retrieval scores on recency + importance.
+
+Game state (memories, plan, clock) auto-saves to localStorage; "Reset save
 data" in settings wipes it.
 
 ## Testing
@@ -32,6 +77,7 @@ pure logic, no DOM — so the headless harness runs the exact shipped code in No
 
 ```sh
 node test/retrieval.mjs       # retrieval math vs a hand-written memory log
+node test/planning.mjs        # plan validation, prompts, dialogue, re-plan (mock LLM)
 node test/headless.mjs        # 3 simulated days (default)
 node test/headless.mjs 7      # a full week
 ```
@@ -42,11 +88,19 @@ hand-written memory log with hand-computed expected top-N orderings, plus the
 importance heuristic, cosine similarity, and embed-queue mechanics — no live
 model calls involved.
 
-`headless.mjs` runs simulated days: NPC at the scheduled place at spot-check
-times, never stuck en route, no NaN drift, day rollover, memory volume bounds,
-perception cooldowns, no orphaned `related_ids`, and the cost ceiling — zero
-model calls with no provider configured, and with a mock embedder only batched
-per-write calls (never per-tick), `fable5` still zero (instrumented via
+`planning.mjs` validates the Fable 5 layer offline: plan JSON parsing +
+validation (chronology, known places, must end asleep at home), prompt
+construction (§7 discipline: sheet + retrieved memories + tight format), a
+mock plan actually steering Mara's movement, dialogue turns becoming memories,
+and the interruption → re-plan path with its cooldown. Invalid or failed plan
+calls always fall back to the previous plan.
+
+`headless.mjs` runs simulated days: NPC at the scheduled place (or inside the
+bakery working a station) at spot-check times, never stuck en route, no NaN
+drift, day rollover, memory volume bounds, perception cooldowns, oven-session
+bounds, no orphaned `related_ids`, and the cost ceiling — zero model calls
+with no provider configured, and with a mock embedder only batched per-write
+calls (never per-tick), `fable5` still zero (instrumented via
 `state.modelCalls`).
 
 ## Build phases (plan §9)
@@ -59,10 +113,28 @@ per-write calls (never per-tick), `fable5` still zero (instrumented via
       `text-embedding-3-small` pipeline with batched queue, recency/importance/relevance
       retrieval validated against a hand-written memory log, memory inspector
       panel (M), localStorage persistence, key entry via settings panel.
-- [ ] **3. Planning + dialogue** — Fable 5 for daily plans and conversation; single NPC
-      end-to-end, including interruption/re-plan.
-- [ ] **4. Scale cast** — full roster (6–8), relationship graph, reflection cadence.
-- [ ] **5. World fill** — remaining buildings, items, shop hours, pathfinding polish.
+- [x] **3. Planning + dialogue** — Fable 5 (`claude-fable-5` + Opus fallback) generates
+      daily schedules each morning and answers free-text conversation fed by
+      `retrieveMemories()`; high-importance perceptions escalate to a re-plan
+      (threshold check is free, cooldown-limited). Bakery got a cutaway interior
+      (oven / counter / kneading table / shelves) with a deterministic workstation
+      rotation. Strict plan validation with fallback to the previous schedule.
+- [x] **4. Scale cast (first slice)** — three NPCs (Mara, Tomas, Edith), each with
+      their own home, sheet, relationships, and fallback rhythm; a park with benches;
+      free-choice planning (work optional, park days allowed, 3-8 anchors, wake
+      05:00-10:00); NPC-to-NPC perception and spontaneous model-driven conversations
+      (per-pair cooldown, turn cap, one at a time, both sides remember); bread
+      buying/selling between customer and staff; per-NPC memory panel tabs.
+- [x] **5. Roles & dynamics** — seven-NPC cast with per-character wants/goals/secrets
+      woven into every prompt; Constable Bram (patrols, reports, pursuit, arrests) and
+      the Mudlarks gang (cred-ordered hierarchy, cover identities); station with jail
+      cell + boat-shed hideout; deterministic crime chain (theft → witnesses → report →
+      wanted → arrest → one-day sentence → rank reshuffle → lie-low period) that the
+      AI planning/conversation layer reacts to.
+- [ ] **6a. Reflection** — reflection cadence (insights compound into opinions),
+      relationship summaries that evolve from what actually happens.
+- [ ] **6b. World fill** — remaining buildings, items, shop hours, pathfinding polish,
+      more cast and places.
 - [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
 
 ## Architecture notes (Phase 1)
@@ -72,9 +144,13 @@ per-write calls (never per-tick), `fable5` still zero (instrumented via
   Current pixel art is procedural placeholder; Kenmi Cute Fantasy / curated
   Higgsfield assets replace the atlas in Phase 5.
 - Agent/building/memory objects follow the plan §6 schemas.
-- The embedding provider is injected (`SIM.setEmbedder`): the browser wires
-  OpenAI when a key exists, the headless harness wires a deterministic mock,
-  and the default is none — so cosine similarity, batching, and retrieval are
-  all testable offline. `state.modelCalls` counts every provider call.
-- NPC dialogue is hardcoded placeholder small talk — the Fable 5 voice layer
-  (Phase 3) will consume `retrieveMemories()` output, which already works.
+- Both model providers are injected (`SIM.setEmbedder` / `SIM.setLLM`): the
+  browser wires OpenAI/Anthropic when keys exist, tests wire deterministic
+  mocks, and the default is none — retrieval, plan validation, dialogue, and
+  re-plan logic are all testable offline. `state.modelCalls` counts every
+  provider call.
+- Fable 5 calls are rationed per plan §7: 1 planning call/NPC/day, 1 call per
+  player-initiated dialogue turn, and re-plans only when a perception clears
+  the importance threshold (cheap check) and the cooldown. Prompts are terse
+  and structured; plan output is strictly validated and falls back to the
+  previous schedule on any failure.

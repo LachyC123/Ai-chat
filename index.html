@@ -57,29 +57,50 @@
 <div class="hud" id="clock"></div>
 <div class="hud" id="hint">WASD / arrows — move &nbsp;·&nbsp; E — talk &nbsp;·&nbsp; M — memories &nbsp;·&nbsp; T — time ×10</div>
 <div class="hud" id="prompt"></div>
-<div id="dialogue"><div class="who"></div><div class="line"></div><div class="more">tap / E</div></div>
+<div id="dialogue">
+  <div class="who"></div><div class="line"></div>
+  <div id="dlgcontrols" style="display:none; margin-top:8px">
+    <input id="dlginput" type="text" maxlength="200" placeholder="Say something…" autocomplete="off"
+           style="width:100%; box-sizing:border-box; background:#14102a; color:#f2ead8;
+                  border:1px solid #7a6aa8; border-radius:6px; padding:6px 8px; font:inherit">
+    <div style="margin-top:6px">
+      <button id="dlgsend" style="background:#3a2f5c; color:#ffcf6e; border:1px solid #7a6aa8;
+              border-radius:6px; padding:4px 12px; font:inherit; cursor:pointer">Say</button>
+      <button id="dlgleave" style="background:#2a2344; color:#f2ead8; border:1px solid #7a6aa8;
+              border-radius:6px; padding:4px 12px; font:inherit; cursor:pointer">Leave</button>
+    </div>
+  </div>
+  <div class="more">tap / E</div>
+</div>
 <div id="talkbtn">TALK</div>
 <div id="gearbtn" class="cornerbtn" style="right: 12px" title="Settings">⚙</div>
 <div id="membtn" class="cornerbtn" style="right: 56px" title="Memory stream (M)">🧠</div>
 
 <div id="settings" class="panel">
   <h3>Settings</h3>
+  <label>Anthropic API key (Fable 5 — planning &amp; dialogue)</label>
+  <input id="anthropickeyinput" type="password" placeholder="sk-ant-..." autocomplete="off">
   <label>OpenAI API key (memory embeddings only)</label>
   <input id="keyinput" type="password" placeholder="sk-..." autocomplete="off">
   <div>
-    <button id="savekey">Save key</button>
-    <button id="clearkey">Clear key</button>
+    <button id="savekey">Save keys</button>
+    <button id="clearkey">Clear keys</button>
     <button id="resetsave">Reset save data</button>
   </div>
   <div id="embedstatus" style="margin-top:8px"></div>
-  <p class="note">The key never leaves this browser (localStorage) and is used only for
-  <code>text-embedding-3-small</code> calls. Without a key the sim still runs —
-  retrieval scores on recency + importance alone until embeddings exist.</p>
+  <p class="note">Keys never leave this browser (localStorage). Anthropic key powers
+  Mara's daily plans and free-text conversation (<code>claude-fable-5</code>, ~1 planning
+  call/day + 1 call per dialogue turn); OpenAI key powers
+  <code>text-embedding-3-small</code> memory retrieval. Without keys the sim still runs —
+  fallback schedule, canned dialogue, recency+importance retrieval.</p>
 </div>
 
 <div id="mempanel" class="panel">
-  <h3>Mara's memory stream</h3>
-  <div id="lastretrieval">No retrieval yet — talk to Mara (E) to run one.</div>
+  <h3 id="memtitle">Memory stream</h3>
+  <div id="npctabs" style="margin-bottom:8px"></div>
+  <div id="planview" style="border:1px solid rgba(122,106,168,.5); border-radius:8px;
+       padding:6px 8px; margin-bottom:10px; background:rgba(20,16,38,.5)"></div>
+  <div id="lastretrieval">No retrieval yet — talk to someone (E) to run one.</div>
   <div id="memlist"></div>
 </div>
 
@@ -91,8 +112,10 @@
 const SIM = (() => {
   const TILE = 16, MAP_W = 40, MAP_H = 28;
   const DAY_REAL_SECONDS = 600;               // 1 in-game day = 10 real minutes
-  const T = { GRASS:0, PATH:1, WATER:2, TREE:3, WALL:4, ROOF:5, DOOR:6, STALL:7, FLOWER:8 };
-  const SOLID = new Set([T.WATER, T.TREE, T.WALL, T.ROOF, T.STALL]);
+  const T = { GRASS:0, PATH:1, WATER:2, TREE:3, WALL:4, ROOF:5, DOOR:6, STALL:7, FLOWER:8,
+              FLOOR:9, OVEN:10, COUNTER:11, SHELF:12, TABLE:13, BENCH:14, BUNK:15 };
+  const SOLID = new Set([T.WATER, T.TREE, T.WALL, T.ROOF, T.STALL,
+                         T.OVEN, T.COUNTER, T.SHELF, T.TABLE, T.BENCH, T.BUNK]);
 
   // Deterministic PRNG so map decoration is identical in browser and headless runs.
   function mulberry32(seed) {
@@ -105,12 +128,57 @@ const SIM = (() => {
   }
 
   // ---- Buildings (schema per plan §6) --------------------------------
+  // The bakery is drawn cutaway-style: walls + visible interior with
+  // objects Mara works at. Workstation "stand" spots are the walkable
+  // tiles adjacent to each object.
   const BUILDINGS = [
     { id: "building_bakery", name: "Mara's Bakery", function: "shop", owner: "npc_mara",
-      open_hours: ["07:00", "19:00"], rect: { x: 7, y: 5, w: 7, h: 5 }, door: { x: 10, y: 9 } },
+      open_hours: ["07:00", "19:00"], rect: { x: 6, y: 4, w: 9, h: 8 }, door: { x: 10, y: 11 },
+      interior: {
+        objects: [
+          { tile: "OVEN",    at: [[7, 5], [8, 5]] },
+          { tile: "TABLE",   at: [[12, 5], [13, 5]] },
+          { tile: "COUNTER", at: [[9, 8], [10, 8], [11, 8]] },
+          { tile: "SHELF",   at: [[7, 8], [7, 9]] },
+        ],
+      },
+      workstations: {
+        oven:    { stand: { x: 8, y: 6 },  label: "baking at the oven" },
+        counter: { stand: { x: 10, y: 7 }, label: "serving at the counter" },
+        knead:   { stand: { x: 12, y: 6 }, label: "kneading dough" },
+        shelf:   { stand: { x: 8, y: 8 },  label: "stocking the shelves" },
+      } },
     { id: "building_bakery_house", name: "Mara's House", function: "home", owner: "npc_mara",
       open_hours: null, rect: { x: 27, y: 5, w: 6, h: 4 }, door: { x: 29, y: 8 } },
+    { id: "building_tomas_house", name: "Tomas's House", function: "home", owner: "npc_tomas",
+      open_hours: null, rect: { x: 33, y: 15, w: 5, h: 4 }, door: { x: 35, y: 18 } },
+    { id: "building_edith_cottage", name: "Edith's Cottage", function: "home", owner: "npc_edith",
+      open_hours: null, rect: { x: 11, y: 15, w: 4, h: 4 }, door: { x: 12, y: 18 } },
+    { id: "building_station", name: "Constable's Station", function: "work", owner: "npc_bram",
+      open_hours: null, rect: { x: 25, y: 15, w: 6, h: 4 }, door: { x: 28, y: 18 },
+      interior: {
+        objects: [
+          { tile: "BUNK", at: [[26, 16]] },    // the cell cot
+          { tile: "TABLE", at: [[29, 16]] },   // Bram's desk
+        ],
+      },
+      cell: { x: 26, y: 17 } },
+    { id: "building_hideout", name: "Old Boat Shed", function: "home", owner: "npc_silas",
+      open_hours: null, rect: { x: 31, y: 22, w: 5, h: 4 }, door: { x: 33, y: 25 } },
   ];
+  const STATION = () => BUILDINGS.find((b) => b.id === "building_station");
+
+  // The park: benches by the pond, a strip of path, open to everyone.
+  const PARK_BENCHES = [[11, 22], [13, 24]];
+  const PARK_SPOTS = [{ x: 12, y: 22 }, { x: 13, y: 23 }, { x: 12, y: 24 }];
+
+  function insideBuilding(b, x, y) {
+    return x >= b.rect.x && x < b.rect.x + b.rect.w && y >= b.rect.y && y < b.rect.y + b.rect.h;
+  }
+  function isOpen(b, minutes) {
+    if (!b.open_hours) return true;
+    return minutes >= hm(b.open_hours[0]) && minutes < hm(b.open_hours[1]);
+  }
 
   const MARKET_SPOT = { x: 19, y: 18 };
 
@@ -132,21 +200,42 @@ const SIM = (() => {
 
     // Paths: main east-west street + spurs to each door and the plaza
     for (let x = 8; x <= 31; x++) set(x, 13, T.PATH);
-    for (let y = 10; y <= 13; y++) set(10, y, T.PATH);        // bakery spur
-    for (let y = 9; y <= 13; y++) set(29, y, T.PATH);         // house spur
+    set(10, 12, T.PATH);                                      // bakery spur
+    for (let y = 9; y <= 13; y++) set(29, y, T.PATH);         // Mara's house spur
     for (let y = 13; y <= 15; y++) set(19, y, T.PATH);        // plaza spur
+    for (let x = 25; x <= 35; x++) set(x, 19, T.PATH);        // to Tomas's house
+    set(35, 19, T.PATH);
+    set(12, 19, T.PATH); set(12, 20, T.PATH);                 // Edith's cottage spur
+    for (let x = 11; x <= 14; x++) set(x, 20, T.PATH);        // cottage row to plaza
+    for (let y = 21; y <= 24; y++) set(12, y, T.PATH);        // park path
+    set(13, 23, T.PATH);
+    for (let x = 32; x <= 34; x++) set(x, 26, T.PATH);        // boat shed yard
 
     // Market plaza
     for (let y = 15; y <= 21; y++)
       for (let x = 15; x <= 24; x++) set(x, y, T.PATH);
-    set(16, 16, T.STALL); set(22, 16, T.STALL); set(24, 19, T.STALL); set(15, 20, T.STALL);
+    set(16, 16, T.STALL); set(22, 16, T.STALL); set(24, 16, T.STALL); set(16, 21, T.STALL);
 
-    // Buildings: roof rows on top, wall row in front, one door
+    // Park benches by the pond
+    for (const [bx, by] of PARK_BENCHES) set(bx, by, T.BENCH);
+
+    // Buildings. Interior buildings get a cutaway: wall perimeter, floor
+    // inside, furniture objects. Others get the roof-and-front-wall look.
     for (const b of BUILDINGS) {
       const { x, y, w, h } = b.rect;
-      for (let ry = y; ry < y + h - 1; ry++)
-        for (let rx = x; rx < x + w; rx++) set(rx, ry, T.ROOF);
-      for (let rx = x; rx < x + w; rx++) set(rx, y + h - 1, T.WALL);
+      if (b.interior) {
+        for (let ry = y; ry < y + h; ry++)
+          for (let rx = x; rx < x + w; rx++) {
+            const edge = ry === y || ry === y + h - 1 || rx === x || rx === x + w - 1;
+            set(rx, ry, edge ? T.WALL : T.FLOOR);
+          }
+        for (const obj of b.interior.objects)
+          for (const [ox, oy] of obj.at) set(ox, oy, T[obj.tile]);
+      } else {
+        for (let ry = y; ry < y + h - 1; ry++)
+          for (let rx = x; rx < x + w; rx++) set(rx, ry, T.ROOF);
+        for (let rx = x; rx < x + w; rx++) set(rx, y + h - 1, T.WALL);
+      }
       set(b.door.x, b.door.y, T.DOOR);
     }
 
@@ -241,6 +330,10 @@ const SIM = (() => {
     };
     npc.memories.push(mem);
     state.embedQueue.push(mem);
+    // Reaction/interruption check (plan §3.6): a cheap importance
+    // threshold, never a model call. Escalation to a re-plan happens in
+    // the consumer via takeInterrupt().
+    if (mem.importance >= REPLAN_THRESHOLD) npc.pendingInterrupt = mem;
     return mem;
   }
 
@@ -301,39 +394,64 @@ const SIM = (() => {
   }
 
   // ---- Perception (plan §3.1): raw observations into the stream ---------
+  const NPC_SIGHTING_COOLDOWN_MIN = 180; // colleagues share a room all day
   const ACTIVITY_OBS = {
     wake:          "Woke up at home and got ready for the day.",
     open_shop:     "Opened the bakery for the morning.",
     tend_shop:     "Tended the counter at the bakery.",
     market_gossip: "Went to the market square to hear the day's news.",
-    head_home:     "Closed up the bakery and headed home for the evening.",
+    head_home:     "Headed home for the evening.",
     sleep:         "Turned in for the night.",
   };
-  const PLACE_PHRASE = { home: "near her house", bakery: "at the bakery", market: "at the market square" };
+  const PLACE_PHRASE = { home: "near home", bakery: "at the bakery",
+                         market: "at the market square", park: "at the park" };
 
   function perceive(state, npc) {
     const now = absMinutes(state.clock);
-    // Activity transitions become observations
+    // Activity transitions become observations (generic fallback text so
+    // AI-invented activity ids still produce memories)
     if (npc.lastActivityKey !== npc.activity.activity) {
       npc.lastActivityKey = npc.activity.activity;
-      const text = ACTIVITY_OBS[npc.activity.activity];
-      if (text) addMemory(state, npc, "observation", text);
+      addMemory(state, npc, "observation",
+        ACTIVITY_OBS[npc.activity.activity] || `Began ${npc.activity.label}.`);
     }
-    // Player within perception radius (cooldown so it isn't logged per tick)
-    const p = state.player;
-    if (Math.hypot(p.x - npc.x, p.y - npc.y) <= PERCEPTION_RADIUS) {
-      const last = npc.perceptionCooldowns.player ?? -Infinity;
-      if (now - last >= PERCEPTION_COOLDOWN_MIN) {
-        npc.perceptionCooldowns.player = now;
-        addMemory(state, npc, "observation",
-          `Noticed the player nearby ${PLACE_PHRASE[npc.activity.place]}.`);
-      }
+    // Nearby people (player + other NPCs) within the perception radius,
+    // cooldown-limited per person so it isn't logged per tick
+    const others = [
+      { id: "player", label: "the player", x: state.player.x, y: state.player.y },
+      ...state.npcs.filter((o) => o !== npc).map((o) => ({ id: o.id, label: o.name, x: o.x, y: o.y })),
+    ];
+    for (const o of others) {
+      if (Math.hypot(o.x - npc.x, o.y - npc.y) > PERCEPTION_RADIUS) continue;
+      const cd = o.id === "player" ? PERCEPTION_COOLDOWN_MIN : NPC_SIGHTING_COOLDOWN_MIN;
+      const last = npc.perceptionCooldowns[o.id] ?? -Infinity;
+      if (now - last < cd) continue;
+      npc.perceptionCooldowns[o.id] = now;
+      addMemory(state, npc, "observation",
+        `Noticed ${o.label} nearby ${PLACE_PHRASE[npc.activity.place] || "in town"}.`);
     }
   }
 
-  // ---- Mara (agent schema per plan §6 + runtime state) ----------------
-  // Phase 1: schedule is a hardcoded anchor loop. Fable 5 planning
-  // replaces `current_plan` generation in Phase 3.
+  // Non-staff visitors buy bread when a worker is around (once per day) —
+  // items are referenceable in memory per plan §5.
+  function maybeBuyBread(state, npc) {
+    if (npc.lastPurchaseDay === state.clock.day) return;
+    const spot = npc.locations.bakery;
+    if (Math.hypot(npc.x - spot.x, npc.y - spot.y) > 0.6) return;
+    if (!isOpen(BUILDINGS[0], state.clock.minutes)) return;
+    const worker = state.npcs.find((o) =>
+      o.workplace === BUILDINGS[0].id && Math.hypot(o.x - npc.x, o.y - npc.y) <= 3);
+    if (!worker) return;
+    npc.lastPurchaseDay = state.clock.day;
+    npc.inventory.push("bread_loaf");
+    addMemory(state, npc, "observation", `Bought a fresh loaf from ${worker.name} at the bakery.`);
+    addMemory(state, worker, "observation", `Sold a fresh loaf to ${npc.name}.`);
+  }
+
+  // ---- The cast (per-NPC sheets, plan §5-6) ----------------------------
+  // Each NPC's anchors are only a FALLBACK rhythm. With an LLM configured
+  // they plan their own days — nothing is mandatory; skipping work for the
+  // park is a valid choice. On any plan failure the previous plan is kept.
   const MARA_ANCHORS = [
     // [time, activity, place, label shown above her head]
     ["06:00", "wake",          "home",   "waking up"],
@@ -344,37 +462,612 @@ const SIM = (() => {
     ["19:00", "head_home",     "home",   "closing up, heading home"],
     ["22:00", "sleep",         "home",   "sleeping"],
   ];
+  const TOMAS_ANCHORS = [
+    ["06:30", "wake",        "home",   "waking up"],
+    ["07:30", "work",        "bakery", "helping at the bakery"],
+    ["13:00", "lunch_break", "market", "lunch at the market"],
+    ["14:00", "work",        "bakery", "afternoon shift"],
+    ["18:30", "head_home",   "home",   "heading home"],
+    ["21:30", "sleep",       "home",   "sleeping"],
+  ];
+  const EDITH_ANCHORS = [
+    ["07:30", "wake",         "home",   "waking up slowly"],
+    ["09:00", "bakery_visit", "bakery", "picking up a seeded loaf"],
+    ["10:30", "park_time",    "park",   "feeding the birds at the park"],
+    ["13:00", "lunch",        "home",   "lunch at home"],
+    ["15:00", "market_stroll","market", "browsing the market"],
+    ["16:30", "park_time",    "park",   "knitting on a park bench"],
+    ["19:00", "evening",      "home",   "settling in for the evening"],
+    ["21:00", "sleep",        "home",   "sleeping"],
+  ];
 
-  function createMara() {
-    const bakery = BUILDINGS[0], house = BUILDINGS[1];
+  const BRAM_ANCHORS = [
+    ["06:30", "wake",          "home",   "morning briefing with himself"],
+    ["08:00", "patrol_market", "market", "patrolling the market"],
+    ["11:30", "patrol_park",   "park",   "walking the park beat"],
+    ["13:00", "paperwork",     "home",   "paperwork at the station"],
+    ["14:30", "patrol_market", "market", "afternoon market patrol"],
+    ["17:00", "rounds",        "bakery", "evening rounds at the bakery"],
+    ["19:30", "station_night", "home",   "back at the station"],
+    ["22:30", "sleep",         "home",   "sleeping"],
+  ];
+  const SILAS_ANCHORS = [
+    ["07:30", "wake",            "home",   "waking at the boat shed"],
+    ["09:00", "fishing",         "park",   "fishing at the pond"],
+    ["11:00", "market_business", "market", "working the market crowd"],
+    ["14:00", "lie_low",         "home",   "lying low at the shed"],
+    ["16:00", "market_evening",  "market", "one more pass of the market"],
+    ["19:30", "den_time",        "home",   "back at the shed"],
+    ["23:00", "sleep",           "home",   "sleeping"],
+  ];
+  const REN_ANCHORS = [
+    ["08:00", "wake",          "home",   "waking at the boat shed"],
+    ["10:00", "market_rounds", "market", "drifting through the market"],
+    ["14:00", "park_watch",    "park",   "idling at the park"],
+    ["16:30", "den_time",      "home",   "back at the shed"],
+    ["22:30", "sleep",         "home",   "sleeping"],
+  ];
+  const PIP_ANCHORS = [
+    ["08:30", "wake",       "home",   "waking at the boat shed"],
+    ["09:30", "bakery_run", "bakery", "fetching bread for the crew"],
+    ["11:00", "lookout",    "market", "loitering near the stalls"],
+    ["13:30", "park_time",  "park",   "skipping stones at the pond"],
+    ["17:00", "den_time",   "home",   "back at the shed"],
+    ["22:00", "sleep",      "home",   "sleeping"],
+  ];
+
+  const NPC_DEFS = [
+    { id: "npc_mara", name: "Mara", role: "baker and owner of the bakery",
+      traits: ["warm", "gossipy", "proud"], pronoun: "she",
+      wants: "the bakery bustling and the town's gossip flowing through her shop",
+      goal: "make the bakery the beating heart of the town",
+      home: "building_bakery_house", workplace: "building_bakery", stationOffset: 0,
+      anchors: MARA_ANCHORS, inventory: ["bread_loaf_x4", "spare_key"],
+      relationships: {
+        npc_tomas: { affinity: 0.6, summary: "Trusts him since he fixed her oven; a good hire." },
+        npc_edith: { affinity: 0.4, summary: "A dependable regular with strong opinions about rye." },
+        npc_bram:  { affinity: 0.5, summary: "The constable takes his evening bun very seriously." },
+        npc_silas: { affinity: 0.1, summary: "A fisherman who never seems to sell any fish." },
+        npc_ren:   { affinity: 0.0, summary: "Drifts around the market a lot. Never buys." },
+        npc_pip:   { affinity: 0.3, summary: "Sweet boy, buys bread daily. Too thin, though." },
+        player:    { affinity: 0.1, summary: "Hasn't formed a strong opinion yet." },
+      },
+      locations: { market: { x: 19, y: 18 }, park: PARK_SPOTS[0] } },
+    { id: "npc_tomas", name: "Tomas", role: "baker's assistant",
+      traits: ["quiet", "practical", "kind"], pronoun: "he",
+      wants: "steady work and no trouble",
+      goal: "save enough to open his own workshop one day",
+      home: "building_tomas_house", workplace: "building_bakery", stationOffset: 1,
+      anchors: TOMAS_ANCHORS, inventory: ["toolbox"],
+      relationships: {
+        npc_mara:  { affinity: 0.7, summary: "She gave him work when nobody else would." },
+        npc_edith: { affinity: 0.3, summary: "Sweet old lady; always asks after his mother." },
+        npc_bram:  { affinity: 0.4, summary: "Decent sort. Keeps the peace without swagger." },
+        npc_silas: { affinity: -0.1, summary: "Something's off about that man's fishing." },
+        npc_ren:   { affinity: 0.0, summary: "Barely knows her." },
+        npc_pip:   { affinity: 0.2, summary: "Kid could use a proper trade." },
+        player:    { affinity: 0.0, summary: "A stranger, so far." },
+      },
+      locations: { market: { x: 18, y: 17 }, park: PARK_SPOTS[1] } },
+    { id: "npc_edith", name: "Edith", role: "retired seamstress",
+      traits: ["sharp-tongued", "nostalgic", "kind-hearted"], pronoun: "she",
+      wants: "company, fresh bread, and to feel useful",
+      goal: "teach somebody to sew properly before her hands give out",
+      home: "building_edith_cottage", workplace: null,
+      anchors: EDITH_ANCHORS, inventory: ["knitting_needles"],
+      relationships: {
+        npc_mara:  { affinity: 0.6, summary: "Buys a seeded loaf most mornings; likes her gossip." },
+        npc_tomas: { affinity: 0.3, summary: "A polite boy who carries her basket sometimes." },
+        npc_bram:  { affinity: 0.5, summary: "Knew his mother. Good family." },
+        npc_silas: { affinity: 0.2, summary: "Charming, in the way that makes you count your rings." },
+        npc_ren:   { affinity: 0.1, summary: "Restless girl. Reminds her of herself, once." },
+        npc_pip:   { affinity: 0.5, summary: "That boy needs a grandmother more than a gang of friends." },
+        player:    { affinity: 0.0, summary: "A new face in town." },
+      },
+      bakerySpot: { x: 10, y: 9 },
+      locations: { market: { x: 20, y: 19 }, park: PARK_SPOTS[2] } },
+    { id: "npc_bram", name: "Bram", role: "town constable",
+      traits: ["dutiful", "observant", "fair"], pronoun: "he",
+      wants: "a quiet, orderly town where nobody locks their doors",
+      goal: "catch whoever has been working the market crowds",
+      isOfficer: true,
+      home: "building_station", workplace: null,
+      anchors: BRAM_ANCHORS, inventory: ["ledger", "iron_key"],
+      relationships: {
+        npc_mara:  { affinity: 0.5, summary: "Her evening bun is the best part of the rounds." },
+        npc_tomas: { affinity: 0.4, summary: "Honest worker. Notices things, too." },
+        npc_edith: { affinity: 0.5, summary: "She hears everything in this town. Useful. Terrifying." },
+        npc_silas: { affinity: -0.2, summary: "A fisherman with dry boots. Watching him." },
+        npc_ren:   { affinity: -0.1, summary: "Quick hands, quick eyes. Watching her too." },
+        npc_pip:   { affinity: 0.1, summary: "That boy is in bad company and knows it." },
+        player:    { affinity: 0.0, summary: "New arrival. No record. Yet." },
+      },
+      bakerySpot: { x: 11, y: 9 },
+      locations: { market: { x: 19, y: 17 }, park: { x: 14, y: 21 } } },
+    { id: "npc_silas", name: "Silas", role: "fisherman",
+      traits: ["calculating", "charming", "patient"], pronoun: "he",
+      wants: "easy coin and no attention",
+      goal: "keep the crew fed without the constable ever looking his way",
+      gang: true, cred: 3, homeSpot: { x: 33, y: 26 },
+      secret: "he runs the Mudlarks, the town's petty thieving crew; the fishing is a cover",
+      home: "building_hideout", workplace: null,
+      anchors: SILAS_ANCHORS, inventory: ["fishing_rod", "lockpicks"],
+      relationships: {
+        npc_ren:   { affinity: 0.6, summary: "His best hands. Too hungry for her own good." },
+        npc_pip:   { affinity: 0.4, summary: "Soft, but loyal. Needs watching, not scolding." },
+        npc_bram:  { affinity: -0.5, summary: "The constable smells something. Stay boring." },
+        npc_mara:  { affinity: 0.2, summary: "Bakers hear everything. Be charming, buy bread." },
+        npc_edith: { affinity: 0.1, summary: "The old woman's eyes miss nothing. Caution." },
+        npc_tomas: { affinity: 0.0, summary: "The assistant looks at him too long." },
+        player:    { affinity: 0.0, summary: "Unknown quantity. Could be useful. Could be trouble." },
+      },
+      bakerySpot: { x: 10, y: 9 },
+      locations: { market: { x: 21, y: 17 }, park: { x: 11, y: 21 } } },
+    { id: "npc_ren", name: "Ren", role: "odd-jobber",
+      traits: ["restless", "light-fingered", "fiercely loyal"], pronoun: "she",
+      wants: "excitement, and Silas's approval",
+      goal: "prove she can run a job alone",
+      gang: true, cred: 2, homeSpot: { x: 32, y: 26 },
+      secret: "she is the Mudlarks' lieutenant and the best pickpocket in town",
+      home: "building_hideout", workplace: null,
+      anchors: REN_ANCHORS, inventory: ["dice"],
+      relationships: {
+        npc_silas: { affinity: 0.7, summary: "He took her in. She'd walk into fire for him." },
+        npc_pip:   { affinity: 0.5, summary: "Little brother she never asked for." },
+        npc_bram:  { affinity: -0.4, summary: "The constable's eyes follow her. Keep moving." },
+        npc_mara:  { affinity: 0.1, summary: "The baker talks too much. Useful, sometimes." },
+        npc_edith: { affinity: 0.2, summary: "The old lady slipped her a bun once. Confusing." },
+        npc_tomas: { affinity: 0.0, summary: "Quiet ones are the ones to watch." },
+        player:    { affinity: 0.0, summary: "New mark? New problem? Undecided." },
+      },
+      bakerySpot: { x: 10, y: 9 },
+      locations: { market: { x: 17, y: 16 }, park: { x: 14, y: 23 } } },
+    { id: "npc_pip", name: "Pip", role: "errand boy",
+      traits: ["jumpy", "eager", "soft-hearted"], pronoun: "he",
+      wants: "to belong somewhere, and maybe to stop feeling guilty",
+      goal: "figure out whether crew life is really for him",
+      gang: true, cred: 1, homeSpot: { x: 34, y: 26 },
+      secret: "he is the Mudlarks' lookout, and he's not sure his heart is in it",
+      home: "building_hideout", workplace: null,
+      anchors: PIP_ANCHORS, inventory: ["slingshot"],
+      relationships: {
+        npc_silas: { affinity: 0.5, summary: "The closest thing to family. Scary, sometimes." },
+        npc_ren:   { affinity: 0.6, summary: "She looks out for him. He'd never admit needing it." },
+        npc_edith: { affinity: 0.5, summary: "She saves him the crusty end bits. He'd hate her knowing what he does." },
+        npc_mara:  { affinity: 0.4, summary: "The bakery smells like the life he maybe wants." },
+        npc_bram:  { affinity: -0.2, summary: "The constable nods at him like he KNOWS." },
+        npc_tomas: { affinity: 0.2, summary: "Tomas said he had good hands for honest work once." },
+        player:    { affinity: 0.1, summary: "New person! Exciting. Suspicious. Both." },
+      },
+      bakerySpot: { x: 11, y: 9 },
+      locations: { market: { x: 22, y: 18 }, park: { x: 13, y: 22 } } },
+  ];
+
+  function createNPC(def) {
+    const bakery = BUILDINGS[0];
+    const home = BUILDINGS.find((b) => b.id === def.home);
     return {
       // static sheet (plan §6 agent schema)
-      id: "npc_mara", name: "Mara", role: "baker",
-      traits: ["warm", "gossipy", "proud"],
-      home: house.id, workplace: bakery.id,
-      schedule_anchors: MARA_ANCHORS.map(([t, a]) => [t, a]),
-      relationships: {
-        player: { affinity: 0.1, summary: "Hasn't formed a strong opinion yet." },
-      },
-      inventory: ["bread_loaf_x4", "spare_key"],
+      id: def.id, name: def.name, role: def.role,
+      traits: def.traits.slice(), pronoun: def.pronoun,
+      wants: def.wants, goal: def.goal, secret: def.secret || null,
+      isOfficer: !!def.isOfficer, gang: !!def.gang,
+      home: def.home, workplace: def.workplace,
+      schedule_anchors: def.anchors.map(([t, a]) => [t, a]),
+      defaultAnchors: def.anchors,
+      relationships: JSON.parse(JSON.stringify(def.relationships)),
+      inventory: def.inventory.slice(),
+      // crime & law runtime (Phase 5)
+      cred: def.cred || 0, gangRank: null, jailedUntil: null,
+      lastTheftDay: 0, lastReleaseDay: 0, pursuit: null,
       // memory stream (plan §6 memory schema objects)
       memories: [], perceptionCooldowns: {}, lastActivityKey: null,
+      // planning (Phase 3)
+      current_plan: def.anchors.map((a) => a.slice()),
+      needsPlan: false, lastPlanDay: 0, planFailures: 0,
+      pendingInterrupt: null, lastReplanAt: null,
+      conversation: [],
       // runtime
-      x: house.door.x, y: house.door.y, dir: "down",
+      x: (def.homeSpot || home.door).x, y: (def.homeSpot || home.door).y, dir: "down",
       path: null, pathKey: null, talking: false,
+      station: null, stationLabel: null, currentTarget: null,
+      stationOffset: def.stationOffset || 0,
+      lastPurchaseDay: 0,
       speed: 3.2, // tiles per real second (scaled by timeScale)
       locations: {
-        home:   { x: house.door.x,  y: house.door.y },
-        bakery: { x: bakery.door.x, y: bakery.door.y },
-        market: { x: MARKET_SPOT.x, y: MARKET_SPOT.y },
+        home:   def.homeSpot || (def.home === "building_station"
+          ? { x: 29, y: 17 } // Bram lives at his desk, practically
+          : { x: home.door.x, y: home.door.y }),
+        bakery: def.workplace === bakery.id
+          ? { x: bakery.workstations.counter.stand.x, y: bakery.workstations.counter.stand.y }
+          : (def.bakerySpot || { x: 10, y: 9 }),
+        market: def.locations.market,
+        park:   def.locations.park,
       },
     };
   }
 
-  function activityAt(minutes) {
-    let cur = MARA_ANCHORS[MARA_ANCHORS.length - 1]; // pre-dawn = still asleep
-    for (const a of MARA_ANCHORS) if (hm(a[0]) <= minutes) cur = a;
+  function activityAt(npc, minutes) {
+    const plan = npc.current_plan || MARA_ANCHORS;
+    let cur = plan[plan.length - 1]; // pre-dawn = still asleep
+    for (const a of plan) if (hm(a[0]) <= minutes) cur = a;
     return { activity: cur[1], place: cur[2], label: cur[3] };
+  }
+
+  // In-bakery micro-routine: deterministic workstation rotation so her
+  // behavior is explainable and testable (legibility pillar).
+  const STATION_ROTATION = ["counter", "oven", "counter", "knead", "counter", "shelf"];
+  function stationFor(activity, absMin) {
+    if (activity === "open_shop") return "oven"; // morning batch
+    return STATION_ROTATION[Math.floor(absMin / 40) % STATION_ROTATION.length];
+  }
+
+  // ---- Fable 5: planning + dialogue (plan §3.5, §3.7, §7) --------------
+  // The LLM provider is injected like the embedder: the browser wires the
+  // Anthropic API when a key is configured; tests wire a mock; the default
+  // is none and the sim keeps running on the fallback schedule.
+  const REPLAN_THRESHOLD = 7;      // importance that warrants a re-plan
+  const REPLAN_COOLDOWN_MIN = 120; // sim minutes between re-plan calls
+  const PLACES = ["home", "bakery", "market", "park"];
+
+  function setLLM(state, fn) { state.llm = fn; }
+
+  // Shared persona block for every prompt: personality, wants, goals —
+  // and secrets/duties, so each character plays their real dynamics.
+  function personaLines(npc) {
+    let s = `Traits: ${npc.traits.join(", ")}. Wants: ${npc.wants}. Long-term goal: ${npc.goal}.`;
+    if (npc.gang)
+      s += `\nSecret — never reveal it casually: ${npc.secret}. Current standing: ${npc.gangRank} of ${GANG_NAME}. Publicly you are just a ${npc.role}.`;
+    if (npc.isOfficer)
+      s += `\nYou are the law in this town: patrol, notice things, take reports seriously.`;
+    return s;
+  }
+  function wantedNames(state) {
+    return state.crimeLog
+      .filter((c) => c.reported && c.arrestDay === null)
+      .map((c) => byId(state, c.culprit).name);
+  }
+
+  async function callFable5(state, req) {
+    if (!state.llm) return null;
+    state.modelCalls.fable5++;
+    return state.llm(req); // { system, prompt, maxTokens } -> Promise<string|null>
+  }
+
+  // Prompt construction discipline (plan §7): (a) static sheet,
+  // (b) retrieved memories, (c) tight output-format instruction — terse
+  // and structured so parsing is unit-testable.
+  function buildPlanningPrompt(state, npc, { reason = null, retrieved = [] } = {}) {
+    const workNote = npc.workplace
+      ? `${npc.name} works at the bakery (open 07:00-19:00), but attendance is entirely ${npc.pronoun === "he" ? "his" : "her"} own choice — this is a life, not a shift roster.`
+      : `${npc.name} is retired — ${npc.pronoun === "he" ? "his" : "her"} time is entirely ${npc.pronoun === "he" ? "his" : "her"} own.`;
+    const system =
+`You decide how ${npc.name}, a ${npc.role} in a small town, spends the day.
+This is an open-ended life simulation: nothing is scripted and nothing is mandatory. ${workNote}
+They may work, skip a day, linger at the park, visit the bakery or market, call on a friend, or stay home. Follow what the personality, memories and relationships suggest, and let days vary naturally — routines are tendencies, not rules.
+${personaLines(npc)}
+Reply with ONLY a JSON array, no prose, no code fences.
+Each entry: ["HH:MM","activity_id","place","short label"].
+Rules: 3 to 8 entries, strictly chronological; first entry between 05:00 and 10:00; last entry has activity_id "sleep" at home no earlier than 20:00; place must be one of home|bakery|market|park; activity_id is snake_case; labels under 60 characters.`;
+    const mems = retrieved.map((r) =>
+      `- [imp ${r.memory.importance}] (${r.memory.timestamp}) ${r.memory.text}`).join("\n") || "- (none yet)";
+    const rel = Object.entries(npc.relationships)
+      .map(([k, v]) => `${k}: affinity ${v.affinity} — ${v.summary}`).join("\n");
+    const wanted = npc.isOfficer && wantedNames(state).length
+      ? `\nActive cases — bring in: ${wantedNames(state).join(", ")}.` : "";
+    const prompt =
+`Day ${state.clock.day}${reason ? `, ${fmtClock(state.clock.minutes)} — adjust the rest of today's plan. Reason: ${reason}` : ""}.${wanted}
+Notable memories:
+${mems}
+Relationships:
+${rel}
+Yesterday's plan (vary from it if the mood or memories suggest):
+${JSON.stringify(npc.current_plan)}
+Typical rhythm, for reference only — NOT a requirement:
+${JSON.stringify(npc.defaultAnchors)}`;
+    return { system, prompt };
+  }
+
+  function validatePlan(text) {
+    if (typeof text !== "string") return null;
+    const m = text.match(/\[[\s\S]*\]/); // tolerate prose/fences around the array
+    if (!m) return null;
+    let plan;
+    try { plan = JSON.parse(m[0]); } catch { return null; }
+    if (!Array.isArray(plan) || plan.length < 3 || plan.length > 8) return null;
+    let prev = -1;
+    for (const e of plan) {
+      if (!Array.isArray(e) || e.length !== 4) return null;
+      const [t, act, place, label] = e;
+      if (typeof t !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) return null;
+      const min = hm(t);
+      if (min <= prev) return null;
+      prev = min;
+      if (typeof act !== "string" || !/^[a-z][a-z0-9_]{1,29}$/.test(act)) return null;
+      if (!PLACES.includes(place)) return null;
+      if (typeof label !== "string" || !label.length || label.length > 60) return null;
+    }
+    const first = plan[0], last = plan[plan.length - 1];
+    if (hm(first[0]) < hm("05:00") || hm(first[0]) > hm("10:00")) return null;
+    if (last[1] !== "sleep" || last[2] !== "home" || hm(last[0]) < hm("20:00")) return null;
+    return plan;
+  }
+
+  async function generatePlan(state, npc, { reason = null } = {}) {
+    npc.lastPlanDay = state.clock.day; // set up front so a slow call can't double-fire
+    let queryVec = null;
+    try { queryVec = await embedText(state, "planning my day"); } catch {}
+    const retrieved = retrieveMemories(state, npc,
+      { queryVec, N: 8, weights: { recency: 1, importance: 2, relevance: 1 } });
+    const { system, prompt } = buildPlanningPrompt(state, npc, { reason, retrieved });
+    try {
+      const text = await callFable5(state, { system, prompt, maxTokens: 400 });
+      const plan = validatePlan(text);
+      if (!plan) { npc.planFailures++; return null; } // keep the previous plan
+      npc.current_plan = plan;
+      addMemory(state, npc, "plan",
+        `Planned the day: ${plan.map((p) => `${p[0]} ${p[3]}`).join("; ")}.`,
+        { importance: 3 });
+      return plan;
+    } catch { npc.planFailures++; return null; }
+  }
+
+  // Consume a pending interruption if it clears the re-plan cooldown.
+  function takeInterrupt(state, npc) {
+    const mem = npc.pendingInterrupt;
+    if (!mem) return null;
+    npc.pendingInterrupt = null;
+    const now = absMinutes(state.clock);
+    if (npc.lastReplanAt !== null && now - npc.lastReplanAt < REPLAN_COOLDOWN_MIN) return null;
+    npc.lastReplanAt = now;
+    return mem;
+  }
+
+  function buildDialoguePrompt(state, npc, retrieved, turns, playerText) {
+    const system =
+`You are ${npc.name}, a ${npc.role} in a small pixel-art town.
+${personaLines(npc)}
+Stay in character. Reply with a single short line of spoken dialogue (under 35 words). No quotation marks, no narration, no stage directions.`;
+    const mems = retrieved.map((r) => `- (${r.memory.timestamp}) ${r.memory.text}`).join("\n")
+      || "- (nothing memorable yet)";
+    const rel = npc.relationships.player;
+    const convo = turns.slice(-6).map((t) => `${t.speaker}: ${t.text}`).join("\n");
+    const prompt =
+`Time: day ${state.clock.day}, ${fmtClock(state.clock.minutes)} — you are ${npc.stationLabel || npc.activity.label}.
+Your relevant memories:
+${mems}
+Relationship with the player: affinity ${rel.affinity} — ${rel.summary}
+Conversation so far:
+${convo ? convo + "\n" : ""}Player: ${playerText}
+${npc.name}:`;
+    return { system, prompt };
+  }
+
+  async function dialogueTurn(state, npc, playerText) {
+    playerText = String(playerText).trim().slice(0, 200);
+    if (!playerText) return null;
+    let queryVec = null;
+    try { queryVec = await embedText(state, playerText); } catch {}
+    const retrieved = retrieveMemories(state, npc, { queryVec, N: 8 });
+    const { system, prompt } = buildDialoguePrompt(state, npc, retrieved, npc.conversation, playerText);
+    const raw = await callFable5(state, { system, prompt, maxTokens: 120 });
+    const line = (raw || "").trim().replace(/^["']+|["']+$/g, "").split("\n")[0].slice(0, 300);
+    if (!line) return null;
+    npc.conversation.push({ speaker: "Player", text: playerText }, { speaker: npc.name, text: line });
+    // The exchange itself becomes a memory; its heuristic importance can
+    // trip the interruption threshold (e.g. the player reports a theft).
+    addMemory(state, npc, "dialogue", `The player said: "${playerText}" I replied: "${line}"`);
+    return { line, retrieved };
+  }
+
+  // ---- NPC-to-NPC conversations (Phase 4) --------------------------------
+  // When two NPCs end up near each other, they may chat — content is
+  // entirely model-decided. Budget guards: one conversation at a time,
+  // a per-pair cooldown, and a fixed turn cap.
+  const NPC_CONVO_COOLDOWN_MIN = 180;
+  const NPC_CONVO_MAX_TURNS = 4;
+  const NPC_CONVO_RADIUS = 2.6; // adjacent bakery stations are 2.24 apart
+
+  function findConvoPair(state) {
+    if (!state.llm || state.activeConvo) return null;
+    const now = absMinutes(state.clock);
+    for (let i = 0; i < state.npcs.length; i++)
+      for (let j = i + 1; j < state.npcs.length; j++) {
+        const a = state.npcs[i], b = state.npcs[j];
+        if (a.talking || b.talking) continue;
+        if (a.jailedUntil || b.jailedUntil) continue;
+        if (!a.activity || !b.activity) continue;
+        if (a.activity.activity === "sleep" || b.activity.activity === "sleep") continue;
+        if (Math.hypot(a.x - b.x, a.y - b.y) > NPC_CONVO_RADIUS) continue;
+        const key = `${a.id}|${b.id}`;
+        if (now - (state.convoCooldowns[key] ?? -Infinity) < NPC_CONVO_COOLDOWN_MIN) continue;
+        state.convoCooldowns[key] = now;
+        return [a, b];
+      }
+    return null;
+  }
+
+  async function npcLine(state, speaker, listener, turns) {
+    let queryVec = null;
+    try { queryVec = await embedText(state, `talking with ${listener.name}`); } catch {}
+    const retrieved = retrieveMemories(state, speaker, { queryVec, N: 6 });
+    const rel = speaker.relationships[listener.id]
+      || { affinity: 0, summary: "They barely know each other." };
+    const system =
+`You are ${speaker.name}, a ${speaker.role} in a small pixel-art town.
+${personaLines(speaker)}
+Stay in character. Reply with a single short line of spoken dialogue (under 30 words). No quotation marks, no narration.`;
+    const mems = retrieved.map((r) => `- (${r.memory.timestamp}) ${r.memory.text}`).join("\n")
+      || "- (nothing memorable yet)";
+    const convo = turns.map((t) => `${t.speaker}: ${t.text}`).join("\n");
+    const prompt =
+`Time: day ${state.clock.day}, ${fmtClock(state.clock.minutes)} — you are ${speaker.stationLabel || speaker.activity.label}.
+You're chatting with ${listener.name}, the ${listener.role}.
+Your relevant memories:
+${mems}
+Your relationship with ${listener.name}: affinity ${rel.affinity} — ${rel.summary}
+${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open naturally.\n`}${speaker.name}:`;
+    const raw = await callFable5(state, { system, prompt, maxTokens: 100 });
+    return (raw || "").trim().replace(/^["']+|["']+$/g, "").split("\n")[0].slice(0, 240) || null;
+  }
+
+  async function runNpcConversation(state, a, b, { maxTurns = NPC_CONVO_MAX_TURNS, onLine = null } = {}) {
+    state.activeConvo = { a: a.id, b: b.id, lines: [] };
+    a.talking = true; b.talking = true;
+    a.dir = b.x < a.x ? "left" : b.x > a.x ? "right" : b.y < a.y ? "up" : "down";
+    b.dir = a.x < b.x ? "left" : a.x > b.x ? "right" : a.y < b.y ? "up" : "down";
+    const turns = [];
+    try {
+      let speaker = a, listener = b;
+      for (let t = 0; t < maxTurns; t++) {
+        const line = await npcLine(state, speaker, listener, turns);
+        if (!line) break;
+        turns.push({ speaker: speaker.name, text: line });
+        state.activeConvo.lines.push({ id: speaker.id, name: speaker.name, text: line });
+        if (onLine) onLine(speaker, line);
+        [speaker, listener] = [listener, speaker];
+      }
+      if (turns.length) {
+        // One summary memory per participant — heuristic importance means a
+        // juicy exchange can trip the other's re-plan (gossip propagation).
+        const summary = turns.map((t) => `${t.speaker}: "${t.text}"`).join(" ");
+        addMemory(state, a, "dialogue", `Chatted with ${b.name}. ${summary}`);
+        addMemory(state, b, "dialogue", `Chatted with ${a.name}. ${summary}`);
+      }
+    } finally {
+      a.talking = false; b.talking = false;
+      state.activeConvo = null;
+    }
+    return turns;
+  }
+
+  // ---- Crime & law (Phase 5) --------------------------------------------
+  // A deterministic cause-and-effect chain the AI layer then reacts to:
+  // theft -> victim + witnesses remember -> a witness near the constable
+  // reports it -> culprit is wanted -> pursuit on sight -> arrest -> a day
+  // in the cell -> gang hierarchy reshuffles (street cred ordering, and an
+  // arrest drops you to the bottom). Every step writes high-importance
+  // memories, so plans, conversations, and gossip all bend around it.
+  const GANG_NAME = "the Mudlarks";
+  const RANK_NAMES = ["leader", "lieutenant", "lookout"];
+  const OFFICER_BLOCK_RADIUS = 6;  // no thefts with the law this close
+  const ARREST_RADIUS = 1.6;
+  const PURSUIT_RADIUS = 9;
+  const JAIL_MINUTES = 1440;       // one full day in the cell
+
+  const byId = (state, id) => state.npcs.find((n) => n.id === id);
+  const gangMembers = (state) => state.npcs.filter((n) => n.gang);
+
+  function refreshGangRanks(state, reason) {
+    const free = gangMembers(state).filter((n) => !n.jailedUntil).sort((a, b) => b.cred - a.cred);
+    for (const n of gangMembers(state)) {
+      const rank = n.jailedUntil ? "locked up"
+        : RANK_NAMES[Math.min(free.indexOf(n), RANK_NAMES.length - 1)];
+      if (rank !== n.gangRank) {
+        const old = n.gangRank;
+        n.gangRank = rank;
+        if (old && !n.jailedUntil)
+          addMemory(state, n, "reflection",
+            `Crew shake-up — ${reason}. I'm the ${rank} of ${GANG_NAME} now.`, { importance: 8 });
+      }
+    }
+  }
+
+  function maybeCommitTheft(state, npc) {
+    if (!npc.gang || npc.jailedUntil) return;
+    if (state.lastCrimeDay === state.clock.day || npc.lastTheftDay === state.clock.day) return;
+    // fresh out of the cell: lie low for a couple of days
+    if (npc.lastReleaseDay && state.clock.day - npc.lastReleaseDay < 2) return;
+    const min = state.clock.minutes;
+    if (min < hm("09:00") || min > hm("18:00")) return;
+    if (Math.hypot(npc.x - npc.locations.market.x, npc.y - npc.locations.market.y) > 1) return;
+    if (state.npcs.some((o) => o.isOfficer && Math.hypot(o.x - npc.x, o.y - npc.y) <= OFFICER_BLOCK_RADIUS)) return;
+    // needs a mark AND crowd cover: at least two civilians in reach
+    const civs = state.npcs
+      .filter((o) => !o.gang && !o.isOfficer && Math.hypot(o.x - npc.x, o.y - npc.y) <= PERCEPTION_RADIUS)
+      .sort((a, b) => Math.hypot(a.x - npc.x, a.y - npc.y) - Math.hypot(b.x - npc.x, b.y - npc.y));
+    if (civs.length < 2) return;
+    const victim = civs[0], witnesses = civs.slice(1);
+    state.lastCrimeDay = state.clock.day;
+    npc.lastTheftDay = state.clock.day;
+    state.crimeLog.push({
+      id: `crime_${state.crimeLog.length + 1}`, day: state.clock.day, ts: absMinutes(state.clock),
+      culprit: npc.id, victim: victim.id, witnesses: witnesses.map((w) => w.id),
+      reported: false, reportedDay: null, arrestDay: null, releaseDay: null,
+    });
+    npc.inventory.push("coin_purse");
+    addMemory(state, npc, "observation",
+      `Lifted ${victim.name}'s coin purse in the market crowd. Clean work.`, { importance: 8 });
+    addMemory(state, victim, "observation",
+      "My coin purse is gone — someone took it right off me in the market crowd!", { importance: 8 });
+    for (const w of witnesses)
+      addMemory(state, w, "observation",
+        `Saw ${npc.name} slip ${victim.name}'s purse away in the market crowd!`, { importance: 9 });
+  }
+
+  function arrest(state, officer, culprit, crime) {
+    crime.arrestDay = state.clock.day;
+    culprit.jailedUntil = absMinutes(state.clock) + JAIL_MINUTES;
+    culprit.talking = false; culprit.needsPlan = false; culprit.pendingInterrupt = null;
+    culprit.path = null; culprit.pathKey = null;
+    // an arrest drops you below everyone on the crew
+    culprit.cred = Math.min(...gangMembers(state).map((n) => n.cred)) - 1;
+    officer.pursuit = null;
+    addMemory(state, officer, "observation",
+      `Arrested ${culprit.name} for the market theft and marched ${culprit.pronoun === "he" ? "him" : "her"} to the cell.`,
+      { importance: 9 });
+    addMemory(state, culprit, "observation",
+      `${officer.name} clapped me in the station cell for the purse job. A full day locked up.`,
+      { importance: 9 });
+    for (const o of state.npcs)
+      if (o !== officer && o !== culprit && Math.hypot(o.x - culprit.x, o.y - culprit.y) <= 5)
+        addMemory(state, o, "observation",
+          `Watched ${officer.name} march ${culprit.name} off to the station.`, { importance: 8 });
+    refreshGangRanks(state, `${culprit.name} got pinched`);
+  }
+
+  function updateLaw(state, officer) {
+    // Witnesses close to the constable report unreported crimes
+    for (const crime of state.crimeLog) {
+      if (crime.reported) continue;
+      for (const wid of crime.witnesses) {
+        const w = byId(state, wid);
+        if (!w || Math.hypot(w.x - officer.x, w.y - officer.y) > 3) continue;
+        crime.reported = true; crime.reportedDay = state.clock.day;
+        const culprit = byId(state, crime.culprit);
+        addMemory(state, w, "dialogue",
+          `Told ${officer.name} what I saw — ${culprit.name} took that purse at the market.`, { importance: 6 });
+        addMemory(state, officer, "dialogue",
+          `${w.name} reported the market theft: ${culprit.name} is the thief. Time to bring ${culprit.pronoun === "he" ? "him" : "her"} in.`,
+          { importance: 9 });
+        break;
+      }
+    }
+    // Pursue and arrest wanted culprits on sight
+    officer.pursuit = null;
+    for (const crime of state.crimeLog) {
+      if (!crime.reported || crime.arrestDay !== null) continue;
+      const culprit = byId(state, crime.culprit);
+      if (!culprit || culprit.jailedUntil) continue;
+      const d = Math.hypot(culprit.x - officer.x, culprit.y - officer.y);
+      if (d <= PURSUIT_RADIUS) {
+        officer.pursuit = culprit.id;
+        if (d <= ARREST_RADIUS) arrest(state, officer, culprit, crime);
+        break;
+      }
+    }
+  }
+
+  function maybeRelease(state, npc) {
+    if (!npc.jailedUntil || absMinutes(state.clock) < npc.jailedUntil) return;
+    npc.jailedUntil = null;
+    npc.needsPlan = true;
+    npc.lastReleaseDay = state.clock.day;
+    const crime = state.crimeLog.find((c) => c.culprit === npc.id && c.arrestDay !== null && c.releaseDay === null);
+    if (crime) crime.releaseDay = state.clock.day;
+    addMemory(state, npc, "observation",
+      "Out of the cell. A day behind bars, and everyone in town saw the arrest.", { importance: 8 });
+    refreshGangRanks(state, `${npc.name} got out of the cell`);
   }
 
   // ---- Movement / collision -------------------------------------------
@@ -385,21 +1078,88 @@ const SIM = (() => {
   }
 
   // Axis-separated slide for the player; hitbox is a small box at the feet.
+  // When a move is blocked but the center of the current tile column/row
+  // would clear (a 1-tile doorway), nudge toward that center instead —
+  // otherwise doorways require pixel-perfect alignment.
   function moveActor(map, actor, dx, dy) {
-    const HW = 0.28, HH = 0.22;
+    const HW = 0.22, HH = 0.2;
     const clear = (x, y) =>
       !isSolidAt(map, x - HW, y - HH) && !isSolidAt(map, x + HW, y - HH) &&
       !isSolidAt(map, x - HW, y + HH) && !isSolidAt(map, x + HW, y + HH);
-    if (dx !== 0 && clear(actor.x + dx, actor.y)) actor.x += dx;
-    if (dy !== 0 && clear(actor.x, actor.y + dy)) actor.y += dy;
+    if (dx !== 0) {
+      if (clear(actor.x + dx, actor.y)) actor.x += dx;
+      else {
+        const cy = Math.floor(actor.y) + 0.5;
+        if (Math.abs(cy - actor.y) > 1e-3 && clear(actor.x + dx, cy))
+          actor.y += Math.sign(cy - actor.y) * Math.min(Math.abs(dx), Math.abs(cy - actor.y));
+      }
+    }
+    if (dy !== 0) {
+      if (clear(actor.x, actor.y + dy)) actor.y += dy;
+      else {
+        const cx = Math.floor(actor.x) + 0.5;
+        if (Math.abs(cx - actor.x) > 1e-3 && clear(cx, actor.y + dy))
+          actor.x += Math.sign(cx - actor.x) * Math.min(Math.abs(dy), Math.abs(cx - actor.x));
+      }
+    }
   }
 
   function updateNPC(state, npc, dtReal) {
-    const act = activityAt(state.clock.minutes);
+    // Jail overrides everything: sit in the cell until the sentence ends
+    maybeRelease(state, npc);
+    if (npc.jailedUntil) {
+      npc.activity = { activity: "jailed", place: "home", label: "locked in the cell" };
+      npc.station = null; npc.stationLabel = null;
+      npc.currentTarget = STATION().cell;
+      moveAlongPath(state, npc, STATION().cell, dtReal);
+      return;
+    }
+
+    const act = activityAt(npc, state.clock.minutes);
     npc.activity = act;
     perceive(state, npc);
+    if (npc.gang) maybeCommitTheft(state, npc);
+    if (npc.isOfficer) updateLaw(state, npc);
+
+    // The constable drops his route to chase a wanted culprit on sight
+    if (npc.isOfficer && npc.pursuit) {
+      const culprit = byId(state, npc.pursuit);
+      if (culprit) {
+        npc.stationLabel = `chasing ${culprit.name}!`;
+        npc.currentTarget = { x: Math.round(culprit.x), y: Math.round(culprit.y) };
+        moveAlongPath(state, npc, npc.currentTarget, dtReal);
+        return;
+      }
+    }
+
+    // Resolve the movement target: staff rotate bakery workstations
+    // (offset per NPC so colleagues don't stack), visitors take the
+    // customer spot in front of the counter, everyone else heads to the
+    // place's fixed spot.
+    let target;
+    const bakery = BUILDINGS[0];
+    if (act.place === "bakery" && npc.workplace === bakery.id) {
+      const name = stationFor(act.activity, absMinutes(state.clock) + npc.stationOffset * 40);
+      const ws = bakery.workstations[name];
+      target = ws.stand;
+      npc.stationLabel = ws.label;
+      if (npc.station !== name) {
+        npc.station = name;
+        // Only log the oven session once they're actually in the bakery
+        if (name === "oven" && Math.hypot(npc.x - target.x, npc.y - target.y) < 4)
+          addMemory(state, npc, "observation", "Put a fresh batch of loaves in the oven.");
+      }
+    } else {
+      npc.station = null; npc.stationLabel = null;
+      target = npc.locations[act.place] || npc.locations.home;
+      if (act.place === "bakery") maybeBuyBread(state, npc);
+    }
+    npc.currentTarget = target;
+    moveAlongPath(state, npc, target, dtReal);
+  }
+
+  function moveAlongPath(state, npc, target, dtReal) {
     if (npc.talking) { npc.moving = false; return; }
-    const target = npc.locations[act.place];
     const distToTarget = Math.hypot(npc.x - target.x, npc.y - target.y);
     if (distToTarget < 0.1) { npc.path = null; npc.moving = false; return; }
 
@@ -428,15 +1188,19 @@ const SIM = (() => {
 
   // ---- State + tick ----------------------------------------------------
   function createState() {
-    return {
+    const state = {
       map: buildMap(),
       buildings: BUILDINGS,
       clock: { day: 1, minutes: hm("06:50") },
       timeScale: 1,
       player: { x: 19, y: 20, dir: "down", moving: false, speed: 4.2 },
-      npcs: [createMara()],
-      // Memory infrastructure (Phase 2)
-      memCounter: 1, embedQueue: [], embedder: null,
+      npcs: NPC_DEFS.map(createNPC),
+      // NPC-to-NPC conversation bookkeeping (Phase 4)
+      activeConvo: null, convoCooldowns: {},
+      // Crime & law (Phase 5)
+      crimeLog: [], lastCrimeDay: 0,
+      // Memory infrastructure (Phase 2) + LLM provider (Phase 3)
+      memCounter: 1, embedQueue: [], embedder: null, llm: null,
       // Cost-ceiling instrumentation (plan §8): fable5 stays ZERO until
       // Phase 3; embeddings stays zero unless an embedder is configured,
       // and even then only per write-batch / per retrieval query — never
@@ -444,21 +1208,35 @@ const SIM = (() => {
       // so the headless harness can catch regressions.
       modelCalls: { fable5: 0, embeddings: 0 },
     };
+    refreshGangRanks(state, "day one"); // silent initial ranking (old rank is null)
+    return state;
   }
 
   function tick(state, dtReal) {
     const c = state.clock;
     c.minutes += dtReal * (1440 / DAY_REAL_SECONDS) * state.timeScale;
     while (c.minutes >= 1440) { c.minutes -= 1440; c.day += 1; }
-    for (const npc of state.npcs) updateNPC(state, npc, dtReal);
+    for (const npc of state.npcs) {
+      // Daily planning trigger (plan §3.5): one Fable 5 call per NPC per
+      // in-game morning. The flag is consumed by the planning pump.
+      // Jailed NPCs don't plan; they replan on release.
+      if (!npc.jailedUntil && c.minutes >= hm("06:00") && npc.lastPlanDay !== c.day)
+        npc.needsPlan = true;
+      updateNPC(state, npc, dtReal);
+    }
   }
 
   return {
-    TILE, MAP_W, MAP_H, DAY_REAL_SECONDS, T, SOLID, BUILDINGS, MARKET_SPOT,
-    PERCEPTION_RADIUS, PERCEPTION_COOLDOWN_MIN, EMBED_BATCH,
+    TILE, MAP_W, MAP_H, DAY_REAL_SECONDS, T, SOLID, BUILDINGS, MARKET_SPOT, PARK_SPOTS,
+    PERCEPTION_RADIUS, PERCEPTION_COOLDOWN_MIN, NPC_SIGHTING_COOLDOWN_MIN, EMBED_BATCH,
+    REPLAN_THRESHOLD, REPLAN_COOLDOWN_MIN, NPC_CONVO_COOLDOWN_MIN, NPC_CONVO_MAX_TURNS,
     buildMap, findPath, hm, fmtClock, activityAt, createState, tick, moveActor, isSolidAt,
+    insideBuilding, isOpen,
     absMinutes, fmtTimestamp, scoreImportance, addMemory, cosineSim,
     setEmbedder, embedText, processEmbedQueue, retrieveMemories,
+    setLLM, buildPlanningPrompt, validatePlan, generatePlan, takeInterrupt,
+    buildDialoguePrompt, dialogueTurn, findConvoPair, runNpcConversation,
+    refreshGangRanks, wantedNames, GANG_NAME, STATION,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -471,13 +1249,17 @@ if (typeof module !== "undefined") module.exports = SIM;
 (() => {
   const { TILE, MAP_W, MAP_H, T } = SIM;
   const state = SIM.createState();
-  const mara = state.npcs[0];
+  let selNpcIdx = 0;                       // NPC shown in the memory panel
+  const selNpc = () => state.npcs[selNpcIdx];
+  let talkTarget = null;                   // NPC the player is talking to
+  const bubbles = new Map();               // npc.id -> {text, until} speech bubbles
 
   // ---- Persistence (plan §2: localStorage for solo play) -----------------
   // Embeddings are stored as base64 Float32 to keep ~600 memories inside
   // the localStorage quota.
   const SAVE_KEY = "townsim.save.v2";
   const API_KEY_KEY = "townsim.openai_key";
+  const ANTHROPIC_KEY_KEY = "townsim.anthropic_key";
   const vecEnc = (v) => {
     const u = new Uint8Array(new Float32Array(v).buffer);
     let s = "";
@@ -492,15 +1274,26 @@ if (typeof module !== "undefined") module.exports = SIM;
   };
   function saveGame() {
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 2, clock: state.clock, memCounter: state.memCounter,
-        player: { x: state.player.x, y: state.player.y },
-        mara: {
-          relationships: mara.relationships,
-          perceptionCooldowns: mara.perceptionCooldowns,
-          memories: mara.memories.map((m) =>
+      const npcs = {};
+      for (const n of state.npcs) {
+        npcs[n.id] = {
+          relationships: n.relationships,
+          perceptionCooldowns: n.perceptionCooldowns,
+          current_plan: n.current_plan, lastPlanDay: n.lastPlanDay,
+          lastReplanAt: n.lastReplanAt, lastPurchaseDay: n.lastPurchaseDay,
+          planFailures: n.planFailures, inventory: n.inventory,
+          cred: n.cred, gangRank: n.gangRank, jailedUntil: n.jailedUntil,
+          lastTheftDay: n.lastTheftDay, lastReleaseDay: n.lastReleaseDay,
+          memories: n.memories.map((m) =>
             ({ ...m, embedding: m.embedding ? vecEnc(m.embedding) : null })),
-        },
+        };
+      }
+      localStorage.setItem(SAVE_KEY, JSON.stringify({
+        v: 5, clock: state.clock, memCounter: state.memCounter,
+        player: { x: state.player.x, y: state.player.y },
+        convoCooldowns: state.convoCooldowns,
+        crimeLog: state.crimeLog, lastCrimeDay: state.lastCrimeDay,
+        npcs,
       }));
     } catch (e) { console.warn("save failed", e); }
   }
@@ -509,20 +1302,38 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 2) return;
+      if (s.v !== 5) return; // older saves start fresh
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
-      mara.relationships = s.mara.relationships;
-      mara.perceptionCooldowns = s.mara.perceptionCooldowns || {};
-      mara.memories = s.mara.memories.map((m) =>
-        ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
-      state.embedQueue = mara.memories.filter((m) => !m.embedding);
-      // Snap Mara to her scheduled place and mark the current activity as
-      // already observed so loading doesn't fabricate a transition memory.
-      const act = SIM.activityAt(state.clock.minutes);
-      mara.lastActivityKey = act.activity;
-      const loc = mara.locations[act.place];
-      mara.x = loc.x; mara.y = loc.y;
+      state.convoCooldowns = s.convoCooldowns || {};
+      state.crimeLog = s.crimeLog || [];
+      state.lastCrimeDay = s.lastCrimeDay || 0;
+      for (const n of state.npcs) {
+        const d = s.npcs[n.id];
+        if (!d) continue;
+        n.relationships = d.relationships;
+        n.perceptionCooldowns = d.perceptionCooldowns || {};
+        if (d.current_plan) n.current_plan = d.current_plan;
+        if (d.lastPlanDay) n.lastPlanDay = d.lastPlanDay;
+        if (d.lastReplanAt !== undefined) n.lastReplanAt = d.lastReplanAt;
+        if (d.lastPurchaseDay) n.lastPurchaseDay = d.lastPurchaseDay;
+        if (d.planFailures) n.planFailures = d.planFailures;
+        if (d.inventory) n.inventory = d.inventory;
+        if (d.cred !== undefined) n.cred = d.cred;
+        if (d.gangRank !== undefined) n.gangRank = d.gangRank;
+        if (d.jailedUntil !== undefined) n.jailedUntil = d.jailedUntil;
+        if (d.lastTheftDay) n.lastTheftDay = d.lastTheftDay;
+        if (d.lastReleaseDay) n.lastReleaseDay = d.lastReleaseDay;
+        n.memories = d.memories.map((m) =>
+          ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
+        state.embedQueue.push(...n.memories.filter((m) => !m.embedding));
+        // Snap to the scheduled place; mark the current activity as seen so
+        // loading doesn't fabricate a transition memory.
+        const act = SIM.activityAt(n, state.clock.minutes);
+        n.lastActivityKey = act.activity;
+        const loc = n.locations[act.place] || n.locations.home;
+        n.x = loc.x; n.y = loc.y;
+      }
     } catch (e) { console.warn("load failed", e); }
   }
   loadGame();
@@ -550,6 +1361,76 @@ if (typeof module !== "undefined") module.exports = SIM;
     try { await SIM.processEmbedQueue(state); } catch (e) { console.warn(e.message); }
   }, 4000);
 
+  // ---- Fable 5 via the Anthropic API (Phase 3) ----------------------------
+  // Direct-from-browser call with the user's own key (never committed).
+  // Fable 5 notes: thinking is always on (omit the param), no sampling
+  // params, and safety classifiers can return stop_reason "refusal" — we
+  // opt into the server-side fallback to claude-opus-4-8 so a false
+  // positive doesn't leave an NPC speechless.
+  function makeAnthropicLLM(key) {
+    return async ({ system, prompt, maxTokens }) => {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-beta": "server-side-fallback-2026-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-fable-5",
+          max_tokens: maxTokens ?? 300,
+          fallbacks: [{ model: "claude-opus-4-8" }],
+          output_config: { effort: "low" }, // cheap loop, expensive voice — keep the voice snappy
+          system,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.stop_reason === "refusal") return null; // whole fallback chain declined
+      return data.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+    };
+  }
+  if (localStorage.getItem(ANTHROPIC_KEY_KEY))
+    SIM.setLLM(state, makeAnthropicLLM(localStorage.getItem(ANTHROPIC_KEY_KEY)));
+
+  // Planning pump: daily plans each in-game morning + escalated re-plans
+  // on high-importance interruptions (plan §3.5-3.6). One NPC per tick so
+  // Fable 5 calls stay staggered.
+  let planningInFlight = false;
+  setInterval(async () => {
+    if (!state.llm || planningInFlight) return;
+    let npc = null, reason = null;
+    for (const n of state.npcs) {
+      if (n.needsPlan) { npc = n; break; }
+      const interrupt = SIM.takeInterrupt(state, n);
+      if (interrupt) { npc = n; reason = interrupt.text; break; }
+    }
+    if (!npc) return;
+    npc.needsPlan = false;
+    planningInFlight = true;
+    try { await SIM.generatePlan(state, npc, { reason }); }
+    catch (e) { console.warn("planning failed:", e.message); }
+    finally { planningInFlight = false; renderMemPanel(); }
+  }, 3000);
+
+  // Conversation pump: when two NPCs meet, they may chat (model-decided
+  // content; sim-core enforces pair cooldowns and one convo at a time).
+  setInterval(async () => {
+    const pair = SIM.findConvoPair(state);
+    if (!pair) return;
+    try {
+      await SIM.runNpcConversation(state, pair[0], pair[1], {
+        onLine: (speaker, line) => {
+          bubbles.set(speaker.id, { text: line, until: performance.now() + 5200 });
+          renderMemPanel();
+        },
+      });
+    } catch (e) { console.warn("npc conversation failed:", e.message); }
+  }, 2500);
+
   window.__DEBUG = { state, SIM }; // inspection hook for the browser test harness
 
   const canvas = document.getElementById("game");
@@ -559,7 +1440,7 @@ if (typeof module !== "undefined") module.exports = SIM;
   // ---- Tile atlas (procedural pixel-art placeholders; Kenmi/Higgsfield
   //      art replaces this atlas in the world-fill phase) ----------------
   const atlas = document.createElement("canvas");
-  atlas.width = TILE * 9; atlas.height = TILE;
+  atlas.width = TILE * 16; atlas.height = TILE;
   {
     const a = atlas.getContext("2d");
     const rnd = (() => { let s = 42; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
@@ -592,6 +1473,31 @@ if (typeof module !== "undefined") module.exports = SIM;
     speckle(T.FLOWER, "#4f9648", "#437f3d", 10);
     px(T.FLOWER, 3, 4, 2, 2, "#e86a8a"); px(T.FLOWER, 10, 9, 2, 2, "#f0d05a");
     px(T.FLOWER, 6, 12, 2, 2, "#e8e6f0");
+    // Interior tiles
+    px(T.FLOOR, 0, 0, TILE, TILE, "#b08850");
+    for (let r = 0; r < 4; r++) px(T.FLOOR, 0, r * 4 + 3, TILE, 1, "#9a7442");
+    px(T.FLOOR, 8, 0, 1, 4, "#9a7442"); px(T.FLOOR, 4, 8, 1, 4, "#9a7442");
+    px(T.OVEN, 0, 0, TILE, TILE, "#b08850");
+    px(T.OVEN, 1, 0, 14, 14, "#7d7a76"); px(T.OVEN, 2, 1, 12, 12, "#8f8c88");
+    px(T.OVEN, 4, 6, 8, 6, "#3a2b20"); px(T.OVEN, 5, 8, 6, 3, "#e8722c");
+    px(T.OVEN, 6, 9, 4, 2, "#f4a83a");
+    px(T.COUNTER, 0, 0, TILE, TILE, "#b08850");
+    px(T.COUNTER, 0, 2, TILE, 10, "#8f6238"); px(T.COUNTER, 0, 2, TILE, 3, "#a87844");
+    px(T.COUNTER, 3, 3, 4, 2, "#d9a45a"); px(T.COUNTER, 9, 3, 4, 2, "#d9a45a");
+    px(T.SHELF, 0, 0, TILE, TILE, "#b08850");
+    px(T.SHELF, 1, 0, 14, 14, "#6d4a2f");
+    px(T.SHELF, 2, 2, 12, 3, "#8f6238"); px(T.SHELF, 2, 8, 12, 3, "#8f6238");
+    px(T.SHELF, 3, 1, 3, 2, "#d9a45a"); px(T.SHELF, 8, 1, 4, 2, "#d9a45a");
+    px(T.SHELF, 4, 7, 3, 2, "#d9a45a"); px(T.SHELF, 9, 7, 3, 2, "#d9a45a");
+    px(T.TABLE, 0, 0, TILE, TILE, "#b08850");
+    px(T.TABLE, 1, 3, 14, 10, "#a87844"); px(T.TABLE, 1, 3, 14, 2, "#c08c50");
+    px(T.TABLE, 4, 7, 5, 4, "#f2ead8"); px(T.TABLE, 10, 6, 3, 3, "#e8dcc0");
+    speckle(T.BENCH, "#4f9648", "#437f3d", 8);
+    px(T.BENCH, 1, 5, 14, 3, "#8f6238"); px(T.BENCH, 1, 9, 14, 2, "#a87844");
+    px(T.BENCH, 2, 8, 2, 6, "#6d4a2f"); px(T.BENCH, 12, 8, 2, 6, "#6d4a2f");
+    px(T.BUNK, 0, 0, TILE, TILE, "#b08850");
+    px(T.BUNK, 1, 4, 14, 8, "#6d4a2f"); px(T.BUNK, 2, 5, 12, 4, "#8a97a8");
+    px(T.BUNK, 2, 5, 4, 4, "#d8d2c0");
   }
 
   // Prerender the static map once.
@@ -624,7 +1530,15 @@ if (typeof module !== "undefined") module.exports = SIM;
     }
   }
   const PAL_PLAYER = { hair: "#c98f3a", tunic: "#3a6ea8", pants: "#43354f" };
-  const PAL_MARA   = { hair: "#4a3226", tunic: "#a8503a", pants: "#5c452c", apron: "#f2ead8" };
+  const PALETTES = {
+    npc_mara:  { hair: "#4a3226", tunic: "#a8503a", pants: "#5c452c", apron: "#f2ead8" },
+    npc_tomas: { hair: "#2e2620", tunic: "#4a6741", pants: "#3a3145", apron: "#d8d2c0" },
+    npc_edith: { hair: "#d8d4e0", tunic: "#7a5a8a", pants: "#4a3f55" },
+    npc_bram:  { hair: "#3a3630", tunic: "#2f4468", pants: "#26222e" },
+    npc_silas: { hair: "#55483a", tunic: "#2f5e5a", pants: "#3a3630" },
+    npc_ren:   { hair: "#7a2e26", tunic: "#8a4a2e", pants: "#3a3145" },
+    npc_pip:   { hair: "#b88a3a", tunic: "#c0a040", pants: "#5c452c" },
+  };
 
   // ---- Day/night tint keyframes (minute, [r,g,b,alpha]) ------------------
   const TINT_KEYS = [
@@ -653,13 +1567,16 @@ if (typeof module !== "undefined") module.exports = SIM;
     if (e.key.toLowerCase() === "e") tryTalk();
     if (e.key.toLowerCase() === "t") state.timeScale = state.timeScale === 1 ? 10 : 1;
     if (e.key.toLowerCase() === "m") togglePanel(memPanel);
-    if (e.key === "Escape") { memPanel.style.display = "none"; settingsPanel.style.display = "none"; }
+    if (e.key === "Escape") {
+      memPanel.style.display = "none"; settingsPanel.style.display = "none";
+      if (dialogueOpen) closeDialogue();
+    }
   });
   addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 
   const joy = { active: false, id: null, bx: 0, by: 0, dx: 0, dy: 0 };
   canvas.addEventListener("pointerdown", (e) => {
-    if (dialogueOpen) { advanceDialogue(); return; }
+    if (dialogueOpen) { if (!llmMode) advanceDialogue(); return; }
     joy.active = true; joy.id = e.pointerId; joy.bx = e.clientX; joy.by = e.clientY;
     joy.dx = 0; joy.dy = 0;
     canvas.setPointerCapture(e.pointerId);
@@ -675,11 +1592,14 @@ if (typeof module !== "undefined") module.exports = SIM;
   canvas.addEventListener("pointerup", endJoy);
   canvas.addEventListener("pointercancel", endJoy);
 
-  // ---- Dialogue (hardcoded placeholder — Fable 5 voice layer is Phase 3) --
+  // ---- Dialogue: Fable 5 free-text when a key is set; canned fallback ----
   const dlg = document.getElementById("dialogue");
   const promptEl = document.getElementById("prompt");
   const talkbtn = document.getElementById("talkbtn");
-  let dialogueOpen = false, dialogueLines = [], dialogueIdx = 0;
+  const dlgControls = document.getElementById("dlgcontrols");
+  const dlgInput = document.getElementById("dlginput");
+  const dlgMore = dlg.querySelector(".more");
+  let dialogueOpen = false, llmMode = false, dialogueLines = [], dialogueIdx = 0, dlgBusy = false;
 
   const LINES = {
     open_shop:     ["Give me a minute — the ovens barely have their eyes open.",
@@ -693,7 +1613,15 @@ if (typeof module !== "undefined") module.exports = SIM;
     wake:          ["*yawns* Bit early for a chat, isn't it?"],
   };
 
-  function nearMara() { return Math.hypot(state.player.x - mara.x, state.player.y - mara.y) < 1.7; }
+  // 2.2 so you can talk across the bakery counter
+  function nearestNpc() {
+    let best = null, bestD = 2.2;
+    for (const n of state.npcs) {
+      const d = Math.hypot(state.player.x - n.x, state.player.y - n.y);
+      if (d < bestD) { best = n; bestD = d; }
+    }
+    return best;
+  }
 
   // Memory panel / settings panel wiring
   const memPanel = document.getElementById("mempanel");
@@ -707,15 +1635,25 @@ if (typeof module !== "undefined") module.exports = SIM;
   document.getElementById("gearbtn").addEventListener("pointerdown", (e) => { e.stopPropagation(); togglePanel(settingsPanel); });
 
   document.getElementById("savekey").addEventListener("click", () => {
-    const k = document.getElementById("keyinput").value.trim();
-    if (!k) return;
-    localStorage.setItem(API_KEY_KEY, k);
-    SIM.setEmbedder(state, makeOpenAIEmbedder(k));
-    document.getElementById("keyinput").value = "";
+    const ok = document.getElementById("keyinput").value.trim();
+    if (ok) {
+      localStorage.setItem(API_KEY_KEY, ok);
+      SIM.setEmbedder(state, makeOpenAIEmbedder(ok));
+      document.getElementById("keyinput").value = "";
+    }
+    const ak = document.getElementById("anthropickeyinput").value.trim();
+    if (ak) {
+      localStorage.setItem(ANTHROPIC_KEY_KEY, ak);
+      SIM.setLLM(state, makeAnthropicLLM(ak));
+      document.getElementById("anthropickeyinput").value = "";
+    }
+    renderMemPanel();
   });
   document.getElementById("clearkey").addEventListener("click", () => {
     localStorage.removeItem(API_KEY_KEY);
+    localStorage.removeItem(ANTHROPIC_KEY_KEY);
     SIM.setEmbedder(state, null);
+    SIM.setLLM(state, null);
   });
   document.getElementById("resetsave").addEventListener("click", () => {
     if (confirm("Wipe the town's save data (memories, clock, positions)?")) {
@@ -726,64 +1664,153 @@ if (typeof module !== "undefined") module.exports = SIM;
 
   let lastRetrieval = null;
   const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  // NPC tabs for the memory panel
+  const tabsEl = document.getElementById("npctabs");
+  state.npcs.forEach((n, i) => {
+    const b = document.createElement("button");
+    b.textContent = n.name;
+    b.addEventListener("click", () => { selNpcIdx = i; renderMemPanel(); });
+    tabsEl.appendChild(b);
+  });
+
   function renderMemPanel() {
+    const npc = selNpc();
     const status = document.getElementById("embedstatus");
-    const embedded = mara.memories.filter((m) => m.embedding).length;
-    status.textContent = `Key: ${state.embedder ? "configured" : "not set"} · ` +
-      `memories: ${mara.memories.length} (${embedded} embedded, ${state.embedQueue.length} queued) · ` +
+    const totalMems = state.npcs.reduce((s, n) => s + n.memories.length, 0);
+    const embedded = state.npcs.reduce((s, n) => s + n.memories.filter((m) => m.embedding).length, 0);
+    status.textContent = `Fable 5: ${state.llm ? "configured" : "not set"} · ` +
+      `embeddings: ${state.embedder ? "configured" : "not set"} · ` +
+      `memories: ${totalMems} (${embedded} embedded, ${state.embedQueue.length} queued) · ` +
       `API calls: ${state.modelCalls.embeddings} embed, ${state.modelCalls.fable5} fable5`;
     if (memPanel.style.display !== "block") return;
+    document.getElementById("memtitle").textContent = `${npc.name}'s memory stream`;
+    for (let i = 0; i < tabsEl.children.length; i++)
+      tabsEl.children[i].style.background = i === selNpcIdx ? "#5a4a8c" : "#3a2f5c";
+    document.getElementById("planview").innerHTML =
+      `<b>${esc(npc.name)}'s plan</b> <span class="meta">(${state.llm && npc.lastPlanDay === state.clock.day && npc.memories.some((m) => m.type === "plan") ? "self-chosen (Fable 5)" : "fallback rhythm"})</span><br>` +
+      npc.current_plan.map(([t, , , label]) => `<span class="meta">${t}</span> ${esc(label)}`).join("<br>");
     const lr = document.getElementById("lastretrieval");
     if (lastRetrieval) {
-      lr.innerHTML = `<b>Retrieval</b> · query: "${esc(lastRetrieval.query)}"` +
+      lr.innerHTML = `<b>Retrieval</b> (${esc(lastRetrieval.who)}) · query: "${esc(lastRetrieval.query)}"` +
         ` · ${lastRetrieval.usedEmbedding ? "embedded query" : "recency+importance only (no embeddings)"}<br>` +
         lastRetrieval.results.map((r) =>
           `<span class="score">${r.score.toFixed(2)}</span> ` +
           `<span class="meta">(r ${r.recency.toFixed(2)} · i ${r.importance.toFixed(2)} · v ${r.relevance.toFixed(2)})</span> ` +
           esc(r.memory.text)).join("<br>");
     }
-    document.getElementById("memlist").innerHTML = mara.memories.slice(-30).reverse().map((m) =>
+    document.getElementById("memlist").innerHTML = npc.memories.slice(-30).reverse().map((m) =>
       `<div class="mem"><span class="meta">${m.timestamp} · ${m.type} · imp ${m.importance}` +
       `${m.embedding ? " · ✓emb" : ""}</span><br>${esc(m.text)}</div>`).join("");
   }
   setInterval(renderMemPanel, 700);
 
-  async function runRetrievalDemo(queryText) {
+  async function runRetrievalDemo(npc, queryText) {
     let queryVec = null;
     try { queryVec = await SIM.embedText(state, queryText); }
     catch (e) { console.warn("query embed failed:", e.message); }
     lastRetrieval = {
-      query: queryText, usedEmbedding: !!queryVec,
-      results: SIM.retrieveMemories(state, mara, { queryVec, N: 5 }),
+      who: npc.name, query: queryText, usedEmbedding: !!queryVec,
+      results: SIM.retrieveMemories(state, npc, { queryVec, N: 5 }),
     };
     renderMemPanel();
   }
 
-  function tryTalk() {
-    if (dialogueOpen) { advanceDialogue(); return; }
-    if (!nearMara() || mara.activity.activity === "sleep") return;
-    // The chat itself becomes a memory, linked to her latest sighting of the player
-    const seen = [...mara.memories].reverse().find((m) => /player/i.test(m.text));
-    SIM.addMemory(state, mara, "dialogue",
-      `The player stopped to chat while I was ${mara.activity.label}.`,
-      { related_ids: seen ? [seen.id] : [] });
-    runRetrievalDemo(`Chatting with the player while ${mara.activity.label}`);
-    dialogueLines = [...(LINES[mara.activity.activity] || LINES.tend_shop),
-                     "(placeholder small talk — the Fable 5 voice layer arrives in Phase 3; her memory stream is already recording this chat — press M to see it)"];
-    dialogueIdx = 0; dialogueOpen = true; mara.talking = true;
-    dlg.querySelector(".who").textContent = "Mara — baker";
-    dlg.querySelector(".line").textContent = dialogueLines[0];
-    dlg.style.display = "block";
-    mara.dir = state.player.x < mara.x ? "left" : state.player.x > mara.x ? "right"
-             : state.player.y < mara.y ? "up" : "down";
+  const GREETINGS = {
+    npc_mara:  null, // uses her activity lines below
+    npc_tomas: "Oh — afternoon. Need something, or just looking?",
+    npc_edith: "Well now, a new face. Come here often? No? You should.",
+    npc_bram:  "Afternoon. New in town? Keep your purse on the inside pocket.",
+    npc_silas: "Fine day for it, friend. Whatever 'it' is for you.",
+    npc_ren:   "You're standing in my spot. ...Kidding. Mostly. What?",
+    npc_pip:   "Oh! Hello! I wasn't doing anything. Why?",
+  };
+  function greetingFor(npc) {
+    if (npc.id === "npc_mara") return (LINES[npc.activity.activity] || LINES.tend_shop)[0];
+    return GREETINGS[npc.id] || "Hello there.";
   }
+
+  function tryTalk() {
+    if (dialogueOpen) { if (!llmMode) advanceDialogue(); return; }
+    const npc = nearestNpc();
+    if (!npc || npc.activity.activity === "sleep" || npc.talking) return;
+    talkTarget = npc;
+    llmMode = !!state.llm;
+    dialogueOpen = true; npc.talking = true;
+    npc.dir = state.player.x < npc.x ? "left" : state.player.x > npc.x ? "right"
+            : state.player.y < npc.y ? "up" : "down";
+    dlg.querySelector(".who").textContent = `${npc.name} — ${npc.role} · ${npc.stationLabel || npc.activity.label}`;
+    dlg.style.display = "block";
+    if (llmMode) {
+      npc.conversation = []; // fresh conversation; memories carry the past
+      dlg.querySelector(".line").textContent = greetingFor(npc);
+      dlgControls.style.display = "block";
+      dlgMore.style.display = "none";
+      dlgInput.value = "";
+      dlgInput.focus();
+    } else {
+      // Canned fallback: no Anthropic key configured
+      const seen = [...npc.memories].reverse().find((m) => /player/i.test(m.text));
+      SIM.addMemory(state, npc, "dialogue",
+        `The player stopped to chat while I was ${npc.stationLabel || npc.activity.label}.`,
+        { related_ids: seen ? [seen.id] : [] });
+      runRetrievalDemo(npc, `Chatting with the player while ${npc.activity.label}`);
+      dialogueLines = [greetingFor(npc),
+                       "(canned small talk — add an Anthropic API key in ⚙ settings for real Fable 5 conversation)"];
+      dialogueIdx = 0;
+      dlg.querySelector(".line").textContent = dialogueLines[0];
+      dlgControls.style.display = "none";
+      dlgMore.style.display = "block";
+    }
+  }
+
+  function closeDialogue() {
+    dialogueOpen = false; dlgBusy = false;
+    if (talkTarget) talkTarget.talking = false;
+    talkTarget = null;
+    dlg.style.display = "none";
+  }
+
   function advanceDialogue() {
     dialogueIdx++;
-    if (dialogueIdx >= dialogueLines.length) {
-      dialogueOpen = false; mara.talking = false; dlg.style.display = "none";
-    } else dlg.querySelector(".line").textContent = dialogueLines[dialogueIdx];
+    if (dialogueIdx >= dialogueLines.length) closeDialogue();
+    else dlg.querySelector(".line").textContent = dialogueLines[dialogueIdx];
   }
-  dlg.addEventListener("pointerdown", (e) => { e.stopPropagation(); advanceDialogue(); });
+
+  async function sendDialogueLine() {
+    const text = dlgInput.value.trim();
+    const npc = talkTarget;
+    if (!text || dlgBusy || !npc) return;
+    dlgBusy = true;
+    dlgInput.value = "";
+    dlg.querySelector(".line").textContent = "…";
+    try {
+      const result = await SIM.dialogueTurn(state, npc, text);
+      if (!dialogueOpen) return; // player walked away mid-call
+      if (result) {
+        dlg.querySelector(".line").textContent = result.line;
+        lastRetrieval = { who: npc.name, query: text, usedEmbedding: !!state.embedder,
+                          results: result.retrieved.slice(0, 5) };
+        renderMemPanel();
+      } else {
+        dlg.querySelector(".line").textContent = `…${npc.name} seems lost for words. (the model declined or returned nothing)`;
+      }
+    } catch (e) {
+      dlg.querySelector(".line").textContent = `…(dialogue call failed: ${e.message})`;
+    } finally {
+      dlgBusy = false;
+      if (dialogueOpen) dlgInput.focus();
+    }
+  }
+
+  dlg.addEventListener("pointerdown", (e) => { e.stopPropagation(); if (!llmMode) advanceDialogue(); });
+  document.getElementById("dlgsend").addEventListener("click", sendDialogueLine);
+  document.getElementById("dlgleave").addEventListener("click", closeDialogue);
+  dlgInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendDialogueLine();
+    if (e.key === "Escape") closeDialogue();
+    e.stopPropagation();
+  });
   talkbtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); tryTalk(); });
 
   // ---- Main loop -----------------------------------------------------------
@@ -832,8 +1859,11 @@ if (typeof module !== "undefined") module.exports = SIM;
     const npcFrame = Math.floor(now / 140) % 2 === 0;
     const actors = [
       { y: p.y, draw: () => drawChar(ctx, p.x, p.y, PAL_PLAYER, p.dir, p.moving && walkFrame, 0) },
-      { y: mara.y, draw: () => drawChar(ctx, mara.x, mara.y, PAL_MARA, mara.dir, mara.moving && npcFrame,
-          mara.activity.activity === "sleep" ? 0 : (!mara.moving ? Math.sin(now / 400) * 0.8 : 0)) },
+      ...state.npcs.map((n) => ({
+        y: n.y,
+        draw: () => drawChar(ctx, n.x, n.y, PALETTES[n.id], n.dir, n.moving && npcFrame,
+          n.activity.activity === "sleep" ? 0 : (!n.moving ? Math.sin(now / 400 + n.x) * 0.8 : 0)),
+      })),
     ].sort((a, b) => a.y - b.y);
     for (const a of actors) a.draw();
 
@@ -855,10 +1885,22 @@ if (typeof module !== "undefined") module.exports = SIM;
       ctx.fillRect(wx * TILE - w / 2, wy * TILE, w, 7);
       ctx.fillStyle = color; ctx.fillText(text, wx * TILE, wy * TILE + 5);
     };
-    for (const b of state.buildings)
-      label(b.rect.x + b.rect.w / 2, b.rect.y - 0.9, b.name, "#f2ead8");
-    label(mara.x, mara.y - 1.6,
-      mara.activity.activity === "sleep" ? "Mara · z z z" : `Mara · ${mara.activity.label}`, "#ffcf6e");
+    for (const b of state.buildings) {
+      const closed = b.open_hours && !SIM.isOpen(b, state.clock.minutes);
+      label(b.rect.x + b.rect.w / 2, b.rect.y - 0.9, b.name + (closed ? " · closed" : ""), "#f2ead8");
+    }
+    for (const n of state.npcs) {
+      const bubble = bubbles.get(n.id);
+      if (bubble && bubble.until > now) {
+        // speech bubble takes priority over the activity label
+        label(n.x, n.y - 1.9, `${n.name}: ${bubble.text.length > 46 ? bubble.text.slice(0, 44) + "…" : bubble.text}`, "#bfe3ff");
+      } else {
+        if (bubble) bubbles.delete(n.id);
+        label(n.x, n.y - 1.6,
+          n.activity.activity === "sleep" ? `${n.name} · z z z`
+            : `${n.name} · ${n.stationLabel || n.activity.label}`, "#ffcf6e");
+      }
+    }
 
     // Joystick overlay
     if (joy.active) {
@@ -872,9 +1914,10 @@ if (typeof module !== "undefined") module.exports = SIM;
     // HUD
     clockEl.textContent = `Day ${state.clock.day} — ${SIM.fmtClock(state.clock.minutes)}` +
                           (state.timeScale !== 1 ? `  ×${state.timeScale}` : "");
-    const canTalk = nearMara() && mara.activity.activity !== "sleep" && !dialogueOpen;
+    const nearby = nearestNpc();
+    const canTalk = nearby && nearby.activity.activity !== "sleep" && !nearby.talking && !dialogueOpen;
     promptEl.style.display = canTalk ? "block" : "none";
-    if (canTalk) promptEl.textContent = "E — talk to Mara";
+    if (canTalk) promptEl.textContent = `E — talk to ${nearby.name}`;
     talkbtn.style.display = canTalk && "ontouchstart" in window ? "flex" : "none";
 
     requestAnimationFrame(frame);
