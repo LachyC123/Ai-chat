@@ -96,10 +96,11 @@
 </div>
 
 <div id="mempanel" class="panel">
-  <h3>Mara's memory stream</h3>
+  <h3 id="memtitle">Memory stream</h3>
+  <div id="npctabs" style="margin-bottom:8px"></div>
   <div id="planview" style="border:1px solid rgba(122,106,168,.5); border-radius:8px;
        padding:6px 8px; margin-bottom:10px; background:rgba(20,16,38,.5)"></div>
-  <div id="lastretrieval">No retrieval yet — talk to Mara (E) to run one.</div>
+  <div id="lastretrieval">No retrieval yet — talk to someone (E) to run one.</div>
   <div id="memlist"></div>
 </div>
 
@@ -112,9 +113,9 @@ const SIM = (() => {
   const TILE = 16, MAP_W = 40, MAP_H = 28;
   const DAY_REAL_SECONDS = 600;               // 1 in-game day = 10 real minutes
   const T = { GRASS:0, PATH:1, WATER:2, TREE:3, WALL:4, ROOF:5, DOOR:6, STALL:7, FLOWER:8,
-              FLOOR:9, OVEN:10, COUNTER:11, SHELF:12, TABLE:13 };
+              FLOOR:9, OVEN:10, COUNTER:11, SHELF:12, TABLE:13, BENCH:14 };
   const SOLID = new Set([T.WATER, T.TREE, T.WALL, T.ROOF, T.STALL,
-                         T.OVEN, T.COUNTER, T.SHELF, T.TABLE]);
+                         T.OVEN, T.COUNTER, T.SHELF, T.TABLE, T.BENCH]);
 
   // Deterministic PRNG so map decoration is identical in browser and headless runs.
   function mulberry32(seed) {
@@ -149,7 +150,15 @@ const SIM = (() => {
       } },
     { id: "building_bakery_house", name: "Mara's House", function: "home", owner: "npc_mara",
       open_hours: null, rect: { x: 27, y: 5, w: 6, h: 4 }, door: { x: 29, y: 8 } },
+    { id: "building_tomas_house", name: "Tomas's House", function: "home", owner: "npc_tomas",
+      open_hours: null, rect: { x: 33, y: 15, w: 5, h: 4 }, door: { x: 35, y: 18 } },
+    { id: "building_edith_cottage", name: "Edith's Cottage", function: "home", owner: "npc_edith",
+      open_hours: null, rect: { x: 11, y: 15, w: 4, h: 4 }, door: { x: 12, y: 18 } },
   ];
+
+  // The park: benches by the pond, a strip of path, open to everyone.
+  const PARK_BENCHES = [[11, 22], [13, 24]];
+  const PARK_SPOTS = [{ x: 12, y: 22 }, { x: 13, y: 23 }, { x: 12, y: 24 }];
 
   function insideBuilding(b, x, y) {
     return x >= b.rect.x && x < b.rect.x + b.rect.w && y >= b.rect.y && y < b.rect.y + b.rect.h;
@@ -180,13 +189,22 @@ const SIM = (() => {
     // Paths: main east-west street + spurs to each door and the plaza
     for (let x = 8; x <= 31; x++) set(x, 13, T.PATH);
     set(10, 12, T.PATH);                                      // bakery spur
-    for (let y = 9; y <= 13; y++) set(29, y, T.PATH);         // house spur
+    for (let y = 9; y <= 13; y++) set(29, y, T.PATH);         // Mara's house spur
     for (let y = 13; y <= 15; y++) set(19, y, T.PATH);        // plaza spur
+    for (let x = 25; x <= 35; x++) set(x, 19, T.PATH);        // to Tomas's house
+    set(35, 19, T.PATH);
+    set(12, 19, T.PATH); set(12, 20, T.PATH);                 // Edith's cottage spur
+    for (let x = 11; x <= 14; x++) set(x, 20, T.PATH);        // cottage row to plaza
+    for (let y = 21; y <= 24; y++) set(12, y, T.PATH);        // park path
+    set(13, 23, T.PATH);
 
     // Market plaza
     for (let y = 15; y <= 21; y++)
       for (let x = 15; x <= 24; x++) set(x, y, T.PATH);
-    set(16, 16, T.STALL); set(22, 16, T.STALL); set(24, 19, T.STALL); set(15, 20, T.STALL);
+    set(16, 16, T.STALL); set(22, 16, T.STALL); set(24, 16, T.STALL); set(16, 21, T.STALL);
+
+    // Park benches by the pond
+    for (const [bx, by] of PARK_BENCHES) set(bx, by, T.BENCH);
 
     // Buildings. Interior buildings get a cutaway: wall perimeter, floor
     // inside, furniture objects. Others get the roof-and-front-wall look.
@@ -363,40 +381,64 @@ const SIM = (() => {
   }
 
   // ---- Perception (plan §3.1): raw observations into the stream ---------
+  const NPC_SIGHTING_COOLDOWN_MIN = 180; // colleagues share a room all day
   const ACTIVITY_OBS = {
     wake:          "Woke up at home and got ready for the day.",
     open_shop:     "Opened the bakery for the morning.",
     tend_shop:     "Tended the counter at the bakery.",
     market_gossip: "Went to the market square to hear the day's news.",
-    head_home:     "Closed up the bakery and headed home for the evening.",
+    head_home:     "Headed home for the evening.",
     sleep:         "Turned in for the night.",
   };
-  const PLACE_PHRASE = { home: "near her house", bakery: "at the bakery", market: "at the market square" };
+  const PLACE_PHRASE = { home: "near home", bakery: "at the bakery",
+                         market: "at the market square", park: "at the park" };
 
   function perceive(state, npc) {
     const now = absMinutes(state.clock);
-    // Activity transitions become observations
+    // Activity transitions become observations (generic fallback text so
+    // AI-invented activity ids still produce memories)
     if (npc.lastActivityKey !== npc.activity.activity) {
       npc.lastActivityKey = npc.activity.activity;
-      const text = ACTIVITY_OBS[npc.activity.activity];
-      if (text) addMemory(state, npc, "observation", text);
+      addMemory(state, npc, "observation",
+        ACTIVITY_OBS[npc.activity.activity] || `Began ${npc.activity.label}.`);
     }
-    // Player within perception radius (cooldown so it isn't logged per tick)
-    const p = state.player;
-    if (Math.hypot(p.x - npc.x, p.y - npc.y) <= PERCEPTION_RADIUS) {
-      const last = npc.perceptionCooldowns.player ?? -Infinity;
-      if (now - last >= PERCEPTION_COOLDOWN_MIN) {
-        npc.perceptionCooldowns.player = now;
-        addMemory(state, npc, "observation",
-          `Noticed the player nearby ${PLACE_PHRASE[npc.activity.place]}.`);
-      }
+    // Nearby people (player + other NPCs) within the perception radius,
+    // cooldown-limited per person so it isn't logged per tick
+    const others = [
+      { id: "player", label: "the player", x: state.player.x, y: state.player.y },
+      ...state.npcs.filter((o) => o !== npc).map((o) => ({ id: o.id, label: o.name, x: o.x, y: o.y })),
+    ];
+    for (const o of others) {
+      if (Math.hypot(o.x - npc.x, o.y - npc.y) > PERCEPTION_RADIUS) continue;
+      const cd = o.id === "player" ? PERCEPTION_COOLDOWN_MIN : NPC_SIGHTING_COOLDOWN_MIN;
+      const last = npc.perceptionCooldowns[o.id] ?? -Infinity;
+      if (now - last < cd) continue;
+      npc.perceptionCooldowns[o.id] = now;
+      addMemory(state, npc, "observation",
+        `Noticed ${o.label} nearby ${PLACE_PHRASE[npc.activity.place] || "in town"}.`);
     }
   }
 
-  // ---- Mara (agent schema per plan §6 + runtime state) ----------------
-  // MARA_ANCHORS is the default/fallback schedule. Phase 3: Fable 5
-  // planning replaces npc.current_plan each in-game morning; on any
-  // parse/validation failure the previous plan is kept.
+  // Non-staff visitors buy bread when a worker is around (once per day) —
+  // items are referenceable in memory per plan §5.
+  function maybeBuyBread(state, npc) {
+    if (npc.lastPurchaseDay === state.clock.day) return;
+    const spot = npc.locations.bakery;
+    if (Math.hypot(npc.x - spot.x, npc.y - spot.y) > 0.6) return;
+    if (!isOpen(BUILDINGS[0], state.clock.minutes)) return;
+    const worker = state.npcs.find((o) =>
+      o.workplace === BUILDINGS[0].id && Math.hypot(o.x - npc.x, o.y - npc.y) <= 3);
+    if (!worker) return;
+    npc.lastPurchaseDay = state.clock.day;
+    npc.inventory.push("bread_loaf");
+    addMemory(state, npc, "observation", `Bought a fresh loaf from ${worker.name} at the bakery.`);
+    addMemory(state, worker, "observation", `Sold a fresh loaf to ${npc.name}.`);
+  }
+
+  // ---- The cast (per-NPC sheets, plan §5-6) ----------------------------
+  // Each NPC's anchors are only a FALLBACK rhythm. With an LLM configured
+  // they plan their own days — nothing is mandatory; skipping work for the
+  // park is a valid choice. On any plan failure the previous plan is kept.
   const MARA_ANCHORS = [
     // [time, activity, place, label shown above her head]
     ["06:00", "wake",          "home",   "waking up"],
@@ -407,35 +449,93 @@ const SIM = (() => {
     ["19:00", "head_home",     "home",   "closing up, heading home"],
     ["22:00", "sleep",         "home",   "sleeping"],
   ];
+  const TOMAS_ANCHORS = [
+    ["06:30", "wake",        "home",   "waking up"],
+    ["07:30", "work",        "bakery", "helping at the bakery"],
+    ["13:00", "lunch_break", "market", "lunch at the market"],
+    ["14:00", "work",        "bakery", "afternoon shift"],
+    ["18:30", "head_home",   "home",   "heading home"],
+    ["21:30", "sleep",       "home",   "sleeping"],
+  ];
+  const EDITH_ANCHORS = [
+    ["07:30", "wake",         "home",   "waking up slowly"],
+    ["09:00", "bakery_visit", "bakery", "picking up a seeded loaf"],
+    ["10:30", "park_time",    "park",   "feeding the birds at the park"],
+    ["13:00", "lunch",        "home",   "lunch at home"],
+    ["15:00", "market_stroll","market", "browsing the market"],
+    ["16:30", "park_time",    "park",   "knitting on a park bench"],
+    ["19:00", "evening",      "home",   "settling in for the evening"],
+    ["21:00", "sleep",        "home",   "sleeping"],
+  ];
 
-  function createMara() {
-    const bakery = BUILDINGS[0], house = BUILDINGS[1];
+  const NPC_DEFS = [
+    { id: "npc_mara", name: "Mara", role: "baker and owner of the bakery",
+      traits: ["warm", "gossipy", "proud"], pronoun: "she",
+      home: "building_bakery_house", workplace: "building_bakery", stationOffset: 0,
+      anchors: MARA_ANCHORS, inventory: ["bread_loaf_x4", "spare_key"],
+      relationships: {
+        npc_tomas: { affinity: 0.6, summary: "Trusts him since he fixed her oven; a good hire." },
+        npc_edith: { affinity: 0.4, summary: "A dependable regular with strong opinions about rye." },
+        player:    { affinity: 0.1, summary: "Hasn't formed a strong opinion yet." },
+      },
+      locations: { market: { x: 19, y: 18 }, park: PARK_SPOTS[0] } },
+    { id: "npc_tomas", name: "Tomas", role: "baker's assistant",
+      traits: ["quiet", "practical", "kind"], pronoun: "he",
+      home: "building_tomas_house", workplace: "building_bakery", stationOffset: 1,
+      anchors: TOMAS_ANCHORS, inventory: ["toolbox"],
+      relationships: {
+        npc_mara:  { affinity: 0.7, summary: "She gave him work when nobody else would." },
+        npc_edith: { affinity: 0.3, summary: "Sweet old lady; always asks after his mother." },
+        player:    { affinity: 0.0, summary: "A stranger, so far." },
+      },
+      locations: { market: { x: 18, y: 17 }, park: PARK_SPOTS[1] } },
+    { id: "npc_edith", name: "Edith", role: "retired seamstress",
+      traits: ["sharp-tongued", "nostalgic", "kind-hearted"], pronoun: "she",
+      home: "building_edith_cottage", workplace: null,
+      anchors: EDITH_ANCHORS, inventory: ["knitting_needles"],
+      relationships: {
+        npc_mara:  { affinity: 0.6, summary: "Buys a seeded loaf most mornings; likes her gossip." },
+        npc_tomas: { affinity: 0.3, summary: "A polite boy who carries her basket sometimes." },
+        player:    { affinity: 0.0, summary: "A new face in town." },
+      },
+      // non-staff stand in FRONT of the bakery counter as customers
+      bakerySpot: { x: 10, y: 9 },
+      locations: { market: { x: 20, y: 19 }, park: PARK_SPOTS[2] } },
+  ];
+
+  function createNPC(def) {
+    const bakery = BUILDINGS[0];
+    const home = BUILDINGS.find((b) => b.id === def.home);
     return {
       // static sheet (plan §6 agent schema)
-      id: "npc_mara", name: "Mara", role: "baker",
-      traits: ["warm", "gossipy", "proud"],
-      home: house.id, workplace: bakery.id,
-      schedule_anchors: MARA_ANCHORS.map(([t, a]) => [t, a]),
-      relationships: {
-        player: { affinity: 0.1, summary: "Hasn't formed a strong opinion yet." },
-      },
-      inventory: ["bread_loaf_x4", "spare_key"],
+      id: def.id, name: def.name, role: def.role,
+      traits: def.traits.slice(), pronoun: def.pronoun,
+      home: def.home, workplace: def.workplace,
+      schedule_anchors: def.anchors.map(([t, a]) => [t, a]),
+      defaultAnchors: def.anchors,
+      relationships: JSON.parse(JSON.stringify(def.relationships)),
+      inventory: def.inventory.slice(),
       // memory stream (plan §6 memory schema objects)
       memories: [], perceptionCooldowns: {}, lastActivityKey: null,
       // planning (Phase 3)
-      current_plan: MARA_ANCHORS.map((a) => a.slice()),
+      current_plan: def.anchors.map((a) => a.slice()),
       needsPlan: false, lastPlanDay: 0, planFailures: 0,
       pendingInterrupt: null, lastReplanAt: null,
       conversation: [],
       // runtime
-      x: house.door.x, y: house.door.y, dir: "down",
+      x: home.door.x, y: home.door.y, dir: "down",
       path: null, pathKey: null, talking: false,
       station: null, stationLabel: null, currentTarget: null,
+      stationOffset: def.stationOffset || 0,
+      lastPurchaseDay: 0,
       speed: 3.2, // tiles per real second (scaled by timeScale)
       locations: {
-        home:   { x: house.door.x,  y: house.door.y },
-        bakery: { x: bakery.workstations.counter.stand.x, y: bakery.workstations.counter.stand.y },
-        market: { x: MARKET_SPOT.x, y: MARKET_SPOT.y },
+        home:   { x: home.door.x, y: home.door.y },
+        bakery: def.workplace === bakery.id
+          ? { x: bakery.workstations.counter.stand.x, y: bakery.workstations.counter.stand.y }
+          : (def.bakerySpot || { x: 10, y: 9 }),
+        market: def.locations.market,
+        park:   def.locations.park,
       },
     };
   }
@@ -461,7 +561,7 @@ const SIM = (() => {
   // is none and the sim keeps running on the fallback schedule.
   const REPLAN_THRESHOLD = 7;      // importance that warrants a re-plan
   const REPLAN_COOLDOWN_MIN = 120; // sim minutes between re-plan calls
-  const PLACES = ["home", "bakery", "market"];
+  const PLACES = ["home", "bakery", "market", "park"];
 
   function setLLM(state, fn) { state.llm = fn; }
 
@@ -475,12 +575,17 @@ const SIM = (() => {
   // (b) retrieved memories, (c) tight output-format instruction — terse
   // and structured so parsing is unit-testable.
   function buildPlanningPrompt(state, npc, { reason = null, retrieved = [] } = {}) {
+    const workNote = npc.workplace
+      ? `${npc.name} works at the bakery (open 07:00-19:00), but attendance is entirely ${npc.pronoun === "he" ? "his" : "her"} own choice — this is a life, not a shift roster.`
+      : `${npc.name} is retired — ${npc.pronoun === "he" ? "his" : "her"} time is entirely ${npc.pronoun === "he" ? "his" : "her"} own.`;
     const system =
-`You plan the day for ${npc.name}, a ${npc.role} in a small town.
-Traits: ${npc.traits.join(", ")}. The bakery is open 07:00-19:00.
+`You decide how ${npc.name}, a ${npc.role} in a small town, spends the day.
+This is an open-ended life simulation: nothing is scripted and nothing is mandatory. ${workNote}
+They may work, skip a day, linger at the park, visit the bakery or market, call on a friend, or stay home. Follow what the personality, memories and relationships suggest, and let days vary naturally — routines are tendencies, not rules.
+Traits: ${npc.traits.join(", ")}.
 Reply with ONLY a JSON array, no prose, no code fences.
 Each entry: ["HH:MM","activity_id","place","short label"].
-Rules: 4 to 8 entries, strictly chronological; first entry between 05:00 and 08:00; last entry has activity_id "sleep" at home no earlier than 20:00; place must be one of home|bakery|market; activity_id is snake_case; labels under 60 characters.`;
+Rules: 3 to 8 entries, strictly chronological; first entry between 05:00 and 10:00; last entry has activity_id "sleep" at home no earlier than 20:00; place must be one of home|bakery|market|park; activity_id is snake_case; labels under 60 characters.`;
     const mems = retrieved.map((r) =>
       `- [imp ${r.memory.importance}] (${r.memory.timestamp}) ${r.memory.text}`).join("\n") || "- (none yet)";
     const rel = Object.entries(npc.relationships)
@@ -491,8 +596,10 @@ Notable memories:
 ${mems}
 Relationships:
 ${rel}
-Default skeleton to adapt (keep work hours similar unless a memory gives a reason to change):
-${JSON.stringify(MARA_ANCHORS)}`;
+Yesterday's plan (vary from it if the mood or memories suggest):
+${JSON.stringify(npc.current_plan)}
+Typical rhythm, for reference only — NOT a requirement:
+${JSON.stringify(npc.defaultAnchors)}`;
     return { system, prompt };
   }
 
@@ -502,7 +609,7 @@ ${JSON.stringify(MARA_ANCHORS)}`;
     if (!m) return null;
     let plan;
     try { plan = JSON.parse(m[0]); } catch { return null; }
-    if (!Array.isArray(plan) || plan.length < 4 || plan.length > 8) return null;
+    if (!Array.isArray(plan) || plan.length < 3 || plan.length > 8) return null;
     let prev = -1;
     for (const e of plan) {
       if (!Array.isArray(e) || e.length !== 4) return null;
@@ -516,7 +623,7 @@ ${JSON.stringify(MARA_ANCHORS)}`;
       if (typeof label !== "string" || !label.length || label.length > 60) return null;
     }
     const first = plan[0], last = plan[plan.length - 1];
-    if (hm(first[0]) < hm("05:00") || hm(first[0]) > hm("08:00")) return null;
+    if (hm(first[0]) < hm("05:00") || hm(first[0]) > hm("10:00")) return null;
     if (last[1] !== "sleep" || last[2] !== "home" || hm(last[0]) < hm("20:00")) return null;
     return plan;
   }
@@ -587,6 +694,85 @@ ${npc.name}:`;
     return { line, retrieved };
   }
 
+  // ---- NPC-to-NPC conversations (Phase 4) --------------------------------
+  // When two NPCs end up near each other, they may chat — content is
+  // entirely model-decided. Budget guards: one conversation at a time,
+  // a per-pair cooldown, and a fixed turn cap.
+  const NPC_CONVO_COOLDOWN_MIN = 180;
+  const NPC_CONVO_MAX_TURNS = 4;
+  const NPC_CONVO_RADIUS = 2.6; // adjacent bakery stations are 2.24 apart
+
+  function findConvoPair(state) {
+    if (!state.llm || state.activeConvo) return null;
+    const now = absMinutes(state.clock);
+    for (let i = 0; i < state.npcs.length; i++)
+      for (let j = i + 1; j < state.npcs.length; j++) {
+        const a = state.npcs[i], b = state.npcs[j];
+        if (a.talking || b.talking) continue;
+        if (!a.activity || !b.activity) continue;
+        if (a.activity.activity === "sleep" || b.activity.activity === "sleep") continue;
+        if (Math.hypot(a.x - b.x, a.y - b.y) > NPC_CONVO_RADIUS) continue;
+        const key = `${a.id}|${b.id}`;
+        if (now - (state.convoCooldowns[key] ?? -Infinity) < NPC_CONVO_COOLDOWN_MIN) continue;
+        state.convoCooldowns[key] = now;
+        return [a, b];
+      }
+    return null;
+  }
+
+  async function npcLine(state, speaker, listener, turns) {
+    let queryVec = null;
+    try { queryVec = await embedText(state, `talking with ${listener.name}`); } catch {}
+    const retrieved = retrieveMemories(state, speaker, { queryVec, N: 6 });
+    const rel = speaker.relationships[listener.id]
+      || { affinity: 0, summary: "They barely know each other." };
+    const system =
+`You are ${speaker.name}, a ${speaker.role} in a small pixel-art town. Traits: ${speaker.traits.join(", ")}.
+Stay in character. Reply with a single short line of spoken dialogue (under 30 words). No quotation marks, no narration.`;
+    const mems = retrieved.map((r) => `- (${r.memory.timestamp}) ${r.memory.text}`).join("\n")
+      || "- (nothing memorable yet)";
+    const convo = turns.map((t) => `${t.speaker}: ${t.text}`).join("\n");
+    const prompt =
+`Time: day ${state.clock.day}, ${fmtClock(state.clock.minutes)} — you are ${speaker.stationLabel || speaker.activity.label}.
+You're chatting with ${listener.name}, the ${listener.role}.
+Your relevant memories:
+${mems}
+Your relationship with ${listener.name}: affinity ${rel.affinity} — ${rel.summary}
+${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open naturally.\n`}${speaker.name}:`;
+    const raw = await callFable5(state, { system, prompt, maxTokens: 100 });
+    return (raw || "").trim().replace(/^["']+|["']+$/g, "").split("\n")[0].slice(0, 240) || null;
+  }
+
+  async function runNpcConversation(state, a, b, { maxTurns = NPC_CONVO_MAX_TURNS, onLine = null } = {}) {
+    state.activeConvo = { a: a.id, b: b.id, lines: [] };
+    a.talking = true; b.talking = true;
+    a.dir = b.x < a.x ? "left" : b.x > a.x ? "right" : b.y < a.y ? "up" : "down";
+    b.dir = a.x < b.x ? "left" : a.x > b.x ? "right" : a.y < b.y ? "up" : "down";
+    const turns = [];
+    try {
+      let speaker = a, listener = b;
+      for (let t = 0; t < maxTurns; t++) {
+        const line = await npcLine(state, speaker, listener, turns);
+        if (!line) break;
+        turns.push({ speaker: speaker.name, text: line });
+        state.activeConvo.lines.push({ id: speaker.id, name: speaker.name, text: line });
+        if (onLine) onLine(speaker, line);
+        [speaker, listener] = [listener, speaker];
+      }
+      if (turns.length) {
+        // One summary memory per participant — heuristic importance means a
+        // juicy exchange can trip the other's re-plan (gossip propagation).
+        const summary = turns.map((t) => `${t.speaker}: "${t.text}"`).join(" ");
+        addMemory(state, a, "dialogue", `Chatted with ${b.name}. ${summary}`);
+        addMemory(state, b, "dialogue", `Chatted with ${a.name}. ${summary}`);
+      }
+    } finally {
+      a.talking = false; b.talking = false;
+      state.activeConvo = null;
+    }
+    return turns;
+  }
+
   // ---- Movement / collision -------------------------------------------
   function isSolidAt(map, x, y) {
     const tx = Math.floor(x), ty = Math.floor(y);
@@ -626,23 +812,27 @@ ${npc.name}:`;
     npc.activity = act;
     perceive(state, npc);
 
-    // Resolve the movement target: workstations inside the bakery,
-    // otherwise the place's fixed spot.
+    // Resolve the movement target: staff rotate bakery workstations
+    // (offset per NPC so colleagues don't stack), visitors take the
+    // customer spot in front of the counter, everyone else heads to the
+    // place's fixed spot.
     let target;
-    if (act.place === "bakery" && BUILDINGS[0].workstations) {
-      const name = stationFor(act.activity, absMinutes(state.clock));
-      const ws = BUILDINGS[0].workstations[name];
+    const bakery = BUILDINGS[0];
+    if (act.place === "bakery" && npc.workplace === bakery.id) {
+      const name = stationFor(act.activity, absMinutes(state.clock) + npc.stationOffset * 40);
+      const ws = bakery.workstations[name];
       target = ws.stand;
       npc.stationLabel = ws.label;
       if (npc.station !== name) {
         npc.station = name;
-        // Only log the oven session once she's actually in the bakery
+        // Only log the oven session once they're actually in the bakery
         if (name === "oven" && Math.hypot(npc.x - target.x, npc.y - target.y) < 4)
           addMemory(state, npc, "observation", "Put a fresh batch of loaves in the oven.");
       }
     } else {
       npc.station = null; npc.stationLabel = null;
-      target = npc.locations[act.place];
+      target = npc.locations[act.place] || npc.locations.home;
+      if (act.place === "bakery") maybeBuyBread(state, npc);
     }
     npc.currentTarget = target;
 
@@ -681,7 +871,9 @@ ${npc.name}:`;
       clock: { day: 1, minutes: hm("06:50") },
       timeScale: 1,
       player: { x: 19, y: 20, dir: "down", moving: false, speed: 4.2 },
-      npcs: [createMara()],
+      npcs: NPC_DEFS.map(createNPC),
+      // NPC-to-NPC conversation bookkeeping (Phase 4)
+      activeConvo: null, convoCooldowns: {},
       // Memory infrastructure (Phase 2) + LLM provider (Phase 3)
       memCounter: 1, embedQueue: [], embedder: null, llm: null,
       // Cost-ceiling instrumentation (plan §8): fable5 stays ZERO until
@@ -706,15 +898,15 @@ ${npc.name}:`;
   }
 
   return {
-    TILE, MAP_W, MAP_H, DAY_REAL_SECONDS, T, SOLID, BUILDINGS, MARKET_SPOT,
-    PERCEPTION_RADIUS, PERCEPTION_COOLDOWN_MIN, EMBED_BATCH,
-    REPLAN_THRESHOLD, REPLAN_COOLDOWN_MIN,
+    TILE, MAP_W, MAP_H, DAY_REAL_SECONDS, T, SOLID, BUILDINGS, MARKET_SPOT, PARK_SPOTS,
+    PERCEPTION_RADIUS, PERCEPTION_COOLDOWN_MIN, NPC_SIGHTING_COOLDOWN_MIN, EMBED_BATCH,
+    REPLAN_THRESHOLD, REPLAN_COOLDOWN_MIN, NPC_CONVO_COOLDOWN_MIN, NPC_CONVO_MAX_TURNS,
     buildMap, findPath, hm, fmtClock, activityAt, createState, tick, moveActor, isSolidAt,
     insideBuilding, isOpen,
     absMinutes, fmtTimestamp, scoreImportance, addMemory, cosineSim,
     setEmbedder, embedText, processEmbedQueue, retrieveMemories,
     setLLM, buildPlanningPrompt, validatePlan, generatePlan, takeInterrupt,
-    buildDialoguePrompt, dialogueTurn,
+    buildDialoguePrompt, dialogueTurn, findConvoPair, runNpcConversation,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -727,7 +919,10 @@ if (typeof module !== "undefined") module.exports = SIM;
 (() => {
   const { TILE, MAP_W, MAP_H, T } = SIM;
   const state = SIM.createState();
-  const mara = state.npcs[0];
+  let selNpcIdx = 0;                       // NPC shown in the memory panel
+  const selNpc = () => state.npcs[selNpcIdx];
+  let talkTarget = null;                   // NPC the player is talking to
+  const bubbles = new Map();               // npc.id -> {text, until} speech bubbles
 
   // ---- Persistence (plan §2: localStorage for solo play) -----------------
   // Embeddings are stored as base64 Float32 to keep ~600 memories inside
@@ -749,17 +944,23 @@ if (typeof module !== "undefined") module.exports = SIM;
   };
   function saveGame() {
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 3, clock: state.clock, memCounter: state.memCounter,
-        player: { x: state.player.x, y: state.player.y },
-        mara: {
-          relationships: mara.relationships,
-          perceptionCooldowns: mara.perceptionCooldowns,
-          current_plan: mara.current_plan, lastPlanDay: mara.lastPlanDay,
-          lastReplanAt: mara.lastReplanAt,
-          memories: mara.memories.map((m) =>
+      const npcs = {};
+      for (const n of state.npcs) {
+        npcs[n.id] = {
+          relationships: n.relationships,
+          perceptionCooldowns: n.perceptionCooldowns,
+          current_plan: n.current_plan, lastPlanDay: n.lastPlanDay,
+          lastReplanAt: n.lastReplanAt, lastPurchaseDay: n.lastPurchaseDay,
+          planFailures: n.planFailures, inventory: n.inventory,
+          memories: n.memories.map((m) =>
             ({ ...m, embedding: m.embedding ? vecEnc(m.embedding) : null })),
-        },
+        };
+      }
+      localStorage.setItem(SAVE_KEY, JSON.stringify({
+        v: 4, clock: state.clock, memCounter: state.memCounter,
+        player: { x: state.player.x, y: state.player.y },
+        convoCooldowns: state.convoCooldowns,
+        npcs,
       }));
     } catch (e) { console.warn("save failed", e); }
   }
@@ -768,23 +969,31 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 2 && s.v !== 3) return;
+      if (s.v !== 4) return; // older single-NPC saves start fresh
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
-      mara.relationships = s.mara.relationships;
-      mara.perceptionCooldowns = s.mara.perceptionCooldowns || {};
-      if (s.mara.current_plan) mara.current_plan = s.mara.current_plan;
-      if (s.mara.lastPlanDay) mara.lastPlanDay = s.mara.lastPlanDay;
-      if (s.mara.lastReplanAt !== undefined) mara.lastReplanAt = s.mara.lastReplanAt;
-      mara.memories = s.mara.memories.map((m) =>
-        ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
-      state.embedQueue = mara.memories.filter((m) => !m.embedding);
-      // Snap Mara to her scheduled place and mark the current activity as
-      // already observed so loading doesn't fabricate a transition memory.
-      const act = SIM.activityAt(mara, state.clock.minutes);
-      mara.lastActivityKey = act.activity;
-      const loc = mara.locations[act.place];
-      mara.x = loc.x; mara.y = loc.y;
+      state.convoCooldowns = s.convoCooldowns || {};
+      for (const n of state.npcs) {
+        const d = s.npcs[n.id];
+        if (!d) continue;
+        n.relationships = d.relationships;
+        n.perceptionCooldowns = d.perceptionCooldowns || {};
+        if (d.current_plan) n.current_plan = d.current_plan;
+        if (d.lastPlanDay) n.lastPlanDay = d.lastPlanDay;
+        if (d.lastReplanAt !== undefined) n.lastReplanAt = d.lastReplanAt;
+        if (d.lastPurchaseDay) n.lastPurchaseDay = d.lastPurchaseDay;
+        if (d.planFailures) n.planFailures = d.planFailures;
+        if (d.inventory) n.inventory = d.inventory;
+        n.memories = d.memories.map((m) =>
+          ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
+        state.embedQueue.push(...n.memories.filter((m) => !m.embedding));
+        // Snap to the scheduled place; mark the current activity as seen so
+        // loading doesn't fabricate a transition memory.
+        const act = SIM.activityAt(n, state.clock.minutes);
+        n.lastActivityKey = act.activity;
+        const loc = n.locations[act.place] || n.locations.home;
+        n.x = loc.x; n.y = loc.y;
+      }
     } catch (e) { console.warn("load failed", e); }
   }
   loadGame();
@@ -847,23 +1056,40 @@ if (typeof module !== "undefined") module.exports = SIM;
   if (localStorage.getItem(ANTHROPIC_KEY_KEY))
     SIM.setLLM(state, makeAnthropicLLM(localStorage.getItem(ANTHROPIC_KEY_KEY)));
 
-  // Planning pump: daily plan each in-game morning + escalated re-plans on
-  // high-importance interruptions (plan §3.5-3.6).
+  // Planning pump: daily plans each in-game morning + escalated re-plans
+  // on high-importance interruptions (plan §3.5-3.6). One NPC per tick so
+  // Fable 5 calls stay staggered.
   let planningInFlight = false;
   setInterval(async () => {
     if (!state.llm || planningInFlight) return;
-    let reason = null;
-    if (!mara.needsPlan) {
-      const interrupt = SIM.takeInterrupt(state, mara);
-      if (!interrupt) return;
-      reason = interrupt.text;
+    let npc = null, reason = null;
+    for (const n of state.npcs) {
+      if (n.needsPlan) { npc = n; break; }
+      const interrupt = SIM.takeInterrupt(state, n);
+      if (interrupt) { npc = n; reason = interrupt.text; break; }
     }
-    mara.needsPlan = false;
+    if (!npc) return;
+    npc.needsPlan = false;
     planningInFlight = true;
-    try { await SIM.generatePlan(state, mara, { reason }); }
+    try { await SIM.generatePlan(state, npc, { reason }); }
     catch (e) { console.warn("planning failed:", e.message); }
     finally { planningInFlight = false; renderMemPanel(); }
   }, 3000);
+
+  // Conversation pump: when two NPCs meet, they may chat (model-decided
+  // content; sim-core enforces pair cooldowns and one convo at a time).
+  setInterval(async () => {
+    const pair = SIM.findConvoPair(state);
+    if (!pair) return;
+    try {
+      await SIM.runNpcConversation(state, pair[0], pair[1], {
+        onLine: (speaker, line) => {
+          bubbles.set(speaker.id, { text: line, until: performance.now() + 5200 });
+          renderMemPanel();
+        },
+      });
+    } catch (e) { console.warn("npc conversation failed:", e.message); }
+  }, 2500);
 
   window.__DEBUG = { state, SIM }; // inspection hook for the browser test harness
 
@@ -874,7 +1100,7 @@ if (typeof module !== "undefined") module.exports = SIM;
   // ---- Tile atlas (procedural pixel-art placeholders; Kenmi/Higgsfield
   //      art replaces this atlas in the world-fill phase) ----------------
   const atlas = document.createElement("canvas");
-  atlas.width = TILE * 14; atlas.height = TILE;
+  atlas.width = TILE * 15; atlas.height = TILE;
   {
     const a = atlas.getContext("2d");
     const rnd = (() => { let s = 42; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
@@ -926,6 +1152,9 @@ if (typeof module !== "undefined") module.exports = SIM;
     px(T.TABLE, 0, 0, TILE, TILE, "#b08850");
     px(T.TABLE, 1, 3, 14, 10, "#a87844"); px(T.TABLE, 1, 3, 14, 2, "#c08c50");
     px(T.TABLE, 4, 7, 5, 4, "#f2ead8"); px(T.TABLE, 10, 6, 3, 3, "#e8dcc0");
+    speckle(T.BENCH, "#4f9648", "#437f3d", 8);
+    px(T.BENCH, 1, 5, 14, 3, "#8f6238"); px(T.BENCH, 1, 9, 14, 2, "#a87844");
+    px(T.BENCH, 2, 8, 2, 6, "#6d4a2f"); px(T.BENCH, 12, 8, 2, 6, "#6d4a2f");
   }
 
   // Prerender the static map once.
@@ -958,7 +1187,11 @@ if (typeof module !== "undefined") module.exports = SIM;
     }
   }
   const PAL_PLAYER = { hair: "#c98f3a", tunic: "#3a6ea8", pants: "#43354f" };
-  const PAL_MARA   = { hair: "#4a3226", tunic: "#a8503a", pants: "#5c452c", apron: "#f2ead8" };
+  const PALETTES = {
+    npc_mara:  { hair: "#4a3226", tunic: "#a8503a", pants: "#5c452c", apron: "#f2ead8" },
+    npc_tomas: { hair: "#2e2620", tunic: "#4a6741", pants: "#3a3145", apron: "#d8d2c0" },
+    npc_edith: { hair: "#d8d4e0", tunic: "#7a5a8a", pants: "#4a3f55" },
+  };
 
   // ---- Day/night tint keyframes (minute, [r,g,b,alpha]) ------------------
   const TINT_KEYS = [
@@ -1033,8 +1266,15 @@ if (typeof module !== "undefined") module.exports = SIM;
     wake:          ["*yawns* Bit early for a chat, isn't it?"],
   };
 
-  // 2.2 so you can talk to Mara across the bakery counter
-  function nearMara() { return Math.hypot(state.player.x - mara.x, state.player.y - mara.y) < 2.2; }
+  // 2.2 so you can talk across the bakery counter
+  function nearestNpc() {
+    let best = null, bestD = 2.2;
+    for (const n of state.npcs) {
+      const d = Math.hypot(state.player.x - n.x, state.player.y - n.y);
+      if (d < bestD) { best = n; bestD = d; }
+    }
+    return best;
+  }
 
   // Memory panel / settings panel wiring
   const memPanel = document.getElementById("mempanel");
@@ -1077,72 +1317,94 @@ if (typeof module !== "undefined") module.exports = SIM;
 
   let lastRetrieval = null;
   const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  // NPC tabs for the memory panel
+  const tabsEl = document.getElementById("npctabs");
+  state.npcs.forEach((n, i) => {
+    const b = document.createElement("button");
+    b.textContent = n.name;
+    b.addEventListener("click", () => { selNpcIdx = i; renderMemPanel(); });
+    tabsEl.appendChild(b);
+  });
+
   function renderMemPanel() {
+    const npc = selNpc();
     const status = document.getElementById("embedstatus");
-    const embedded = mara.memories.filter((m) => m.embedding).length;
+    const totalMems = state.npcs.reduce((s, n) => s + n.memories.length, 0);
+    const embedded = state.npcs.reduce((s, n) => s + n.memories.filter((m) => m.embedding).length, 0);
     status.textContent = `Fable 5: ${state.llm ? "configured" : "not set"} · ` +
       `embeddings: ${state.embedder ? "configured" : "not set"} · ` +
-      `memories: ${mara.memories.length} (${embedded} embedded, ${state.embedQueue.length} queued) · ` +
-      `API calls: ${state.modelCalls.embeddings} embed, ${state.modelCalls.fable5} fable5` +
-      (mara.planFailures ? ` · plan failures: ${mara.planFailures}` : "");
+      `memories: ${totalMems} (${embedded} embedded, ${state.embedQueue.length} queued) · ` +
+      `API calls: ${state.modelCalls.embeddings} embed, ${state.modelCalls.fable5} fable5`;
     if (memPanel.style.display !== "block") return;
+    document.getElementById("memtitle").textContent = `${npc.name}'s memory stream`;
+    for (let i = 0; i < tabsEl.children.length; i++)
+      tabsEl.children[i].style.background = i === selNpcIdx ? "#5a4a8c" : "#3a2f5c";
     document.getElementById("planview").innerHTML =
-      `<b>Today's plan</b> <span class="meta">(${state.llm && mara.lastPlanDay === state.clock.day && mara.memories.some((m) => m.type === "plan") ? "Fable 5" : "default"})</span><br>` +
-      mara.current_plan.map(([t, , , label]) => `<span class="meta">${t}</span> ${esc(label)}`).join("<br>");
+      `<b>${esc(npc.name)}'s plan</b> <span class="meta">(${state.llm && npc.lastPlanDay === state.clock.day && npc.memories.some((m) => m.type === "plan") ? "self-chosen (Fable 5)" : "fallback rhythm"})</span><br>` +
+      npc.current_plan.map(([t, , , label]) => `<span class="meta">${t}</span> ${esc(label)}`).join("<br>");
     const lr = document.getElementById("lastretrieval");
     if (lastRetrieval) {
-      lr.innerHTML = `<b>Retrieval</b> · query: "${esc(lastRetrieval.query)}"` +
+      lr.innerHTML = `<b>Retrieval</b> (${esc(lastRetrieval.who)}) · query: "${esc(lastRetrieval.query)}"` +
         ` · ${lastRetrieval.usedEmbedding ? "embedded query" : "recency+importance only (no embeddings)"}<br>` +
         lastRetrieval.results.map((r) =>
           `<span class="score">${r.score.toFixed(2)}</span> ` +
           `<span class="meta">(r ${r.recency.toFixed(2)} · i ${r.importance.toFixed(2)} · v ${r.relevance.toFixed(2)})</span> ` +
           esc(r.memory.text)).join("<br>");
     }
-    document.getElementById("memlist").innerHTML = mara.memories.slice(-30).reverse().map((m) =>
+    document.getElementById("memlist").innerHTML = npc.memories.slice(-30).reverse().map((m) =>
       `<div class="mem"><span class="meta">${m.timestamp} · ${m.type} · imp ${m.importance}` +
       `${m.embedding ? " · ✓emb" : ""}</span><br>${esc(m.text)}</div>`).join("");
   }
   setInterval(renderMemPanel, 700);
 
-  async function runRetrievalDemo(queryText) {
+  async function runRetrievalDemo(npc, queryText) {
     let queryVec = null;
     try { queryVec = await SIM.embedText(state, queryText); }
     catch (e) { console.warn("query embed failed:", e.message); }
     lastRetrieval = {
-      query: queryText, usedEmbedding: !!queryVec,
-      results: SIM.retrieveMemories(state, mara, { queryVec, N: 5 }),
+      who: npc.name, query: queryText, usedEmbedding: !!queryVec,
+      results: SIM.retrieveMemories(state, npc, { queryVec, N: 5 }),
     };
     renderMemPanel();
   }
 
-  function greetingFor() {
-    return (LINES[mara.activity.activity] || LINES.tend_shop)[0];
+  const GREETINGS = {
+    npc_mara:  null, // uses her activity lines below
+    npc_tomas: "Oh — afternoon. Need something, or just looking?",
+    npc_edith: "Well now, a new face. Come here often? No? You should.",
+  };
+  function greetingFor(npc) {
+    if (npc.id === "npc_mara") return (LINES[npc.activity.activity] || LINES.tend_shop)[0];
+    return GREETINGS[npc.id] || "Hello there.";
   }
 
   function tryTalk() {
     if (dialogueOpen) { if (!llmMode) advanceDialogue(); return; }
-    if (!nearMara() || mara.activity.activity === "sleep") return;
+    const npc = nearestNpc();
+    if (!npc || npc.activity.activity === "sleep" || npc.talking) return;
+    talkTarget = npc;
     llmMode = !!state.llm;
-    dialogueOpen = true; mara.talking = true;
-    mara.dir = state.player.x < mara.x ? "left" : state.player.x > mara.x ? "right"
-             : state.player.y < mara.y ? "up" : "down";
-    dlg.querySelector(".who").textContent = `Mara — baker · ${mara.stationLabel || mara.activity.label}`;
+    dialogueOpen = true; npc.talking = true;
+    npc.dir = state.player.x < npc.x ? "left" : state.player.x > npc.x ? "right"
+            : state.player.y < npc.y ? "up" : "down";
+    dlg.querySelector(".who").textContent = `${npc.name} — ${npc.role} · ${npc.stationLabel || npc.activity.label}`;
     dlg.style.display = "block";
     if (llmMode) {
-      mara.conversation = []; // fresh conversation; memories carry the past
-      dlg.querySelector(".line").textContent = greetingFor();
+      npc.conversation = []; // fresh conversation; memories carry the past
+      dlg.querySelector(".line").textContent = greetingFor(npc);
       dlgControls.style.display = "block";
       dlgMore.style.display = "none";
       dlgInput.value = "";
       dlgInput.focus();
     } else {
       // Canned fallback: no Anthropic key configured
-      const seen = [...mara.memories].reverse().find((m) => /player/i.test(m.text));
-      SIM.addMemory(state, mara, "dialogue",
-        `The player stopped to chat while I was ${mara.stationLabel || mara.activity.label}.`,
+      const seen = [...npc.memories].reverse().find((m) => /player/i.test(m.text));
+      SIM.addMemory(state, npc, "dialogue",
+        `The player stopped to chat while I was ${npc.stationLabel || npc.activity.label}.`,
         { related_ids: seen ? [seen.id] : [] });
-      runRetrievalDemo(`Chatting with the player while ${mara.activity.label}`);
-      dialogueLines = [...(LINES[mara.activity.activity] || LINES.tend_shop),
+      runRetrievalDemo(npc, `Chatting with the player while ${npc.activity.label}`);
+      dialogueLines = [greetingFor(npc),
                        "(canned small talk — add an Anthropic API key in ⚙ settings for real Fable 5 conversation)"];
       dialogueIdx = 0;
       dlg.querySelector(".line").textContent = dialogueLines[0];
@@ -1152,7 +1414,9 @@ if (typeof module !== "undefined") module.exports = SIM;
   }
 
   function closeDialogue() {
-    dialogueOpen = false; mara.talking = false; dlgBusy = false;
+    dialogueOpen = false; dlgBusy = false;
+    if (talkTarget) talkTarget.talking = false;
+    talkTarget = null;
     dlg.style.display = "none";
   }
 
@@ -1164,19 +1428,21 @@ if (typeof module !== "undefined") module.exports = SIM;
 
   async function sendDialogueLine() {
     const text = dlgInput.value.trim();
-    if (!text || dlgBusy) return;
+    const npc = talkTarget;
+    if (!text || dlgBusy || !npc) return;
     dlgBusy = true;
     dlgInput.value = "";
     dlg.querySelector(".line").textContent = "…";
     try {
-      const result = await SIM.dialogueTurn(state, mara, text);
+      const result = await SIM.dialogueTurn(state, npc, text);
       if (!dialogueOpen) return; // player walked away mid-call
       if (result) {
         dlg.querySelector(".line").textContent = result.line;
-        lastRetrieval = { query: text, usedEmbedding: !!state.embedder, results: result.retrieved.slice(0, 5) };
+        lastRetrieval = { who: npc.name, query: text, usedEmbedding: !!state.embedder,
+                          results: result.retrieved.slice(0, 5) };
         renderMemPanel();
       } else {
-        dlg.querySelector(".line").textContent = "…Mara seems lost for words. (the model declined or returned nothing)";
+        dlg.querySelector(".line").textContent = `…${npc.name} seems lost for words. (the model declined or returned nothing)`;
       }
     } catch (e) {
       dlg.querySelector(".line").textContent = `…(dialogue call failed: ${e.message})`;
@@ -1242,8 +1508,11 @@ if (typeof module !== "undefined") module.exports = SIM;
     const npcFrame = Math.floor(now / 140) % 2 === 0;
     const actors = [
       { y: p.y, draw: () => drawChar(ctx, p.x, p.y, PAL_PLAYER, p.dir, p.moving && walkFrame, 0) },
-      { y: mara.y, draw: () => drawChar(ctx, mara.x, mara.y, PAL_MARA, mara.dir, mara.moving && npcFrame,
-          mara.activity.activity === "sleep" ? 0 : (!mara.moving ? Math.sin(now / 400) * 0.8 : 0)) },
+      ...state.npcs.map((n) => ({
+        y: n.y,
+        draw: () => drawChar(ctx, n.x, n.y, PALETTES[n.id], n.dir, n.moving && npcFrame,
+          n.activity.activity === "sleep" ? 0 : (!n.moving ? Math.sin(now / 400 + n.x) * 0.8 : 0)),
+      })),
     ].sort((a, b) => a.y - b.y);
     for (const a of actors) a.draw();
 
@@ -1269,9 +1538,18 @@ if (typeof module !== "undefined") module.exports = SIM;
       const closed = b.open_hours && !SIM.isOpen(b, state.clock.minutes);
       label(b.rect.x + b.rect.w / 2, b.rect.y - 0.9, b.name + (closed ? " · closed" : ""), "#f2ead8");
     }
-    label(mara.x, mara.y - 1.6,
-      mara.activity.activity === "sleep" ? "Mara · z z z"
-        : `Mara · ${mara.stationLabel || mara.activity.label}`, "#ffcf6e");
+    for (const n of state.npcs) {
+      const bubble = bubbles.get(n.id);
+      if (bubble && bubble.until > now) {
+        // speech bubble takes priority over the activity label
+        label(n.x, n.y - 1.9, `${n.name}: ${bubble.text.length > 46 ? bubble.text.slice(0, 44) + "…" : bubble.text}`, "#bfe3ff");
+      } else {
+        if (bubble) bubbles.delete(n.id);
+        label(n.x, n.y - 1.6,
+          n.activity.activity === "sleep" ? `${n.name} · z z z`
+            : `${n.name} · ${n.stationLabel || n.activity.label}`, "#ffcf6e");
+      }
+    }
 
     // Joystick overlay
     if (joy.active) {
@@ -1285,9 +1563,10 @@ if (typeof module !== "undefined") module.exports = SIM;
     // HUD
     clockEl.textContent = `Day ${state.clock.day} — ${SIM.fmtClock(state.clock.minutes)}` +
                           (state.timeScale !== 1 ? `  ×${state.timeScale}` : "");
-    const canTalk = nearMara() && mara.activity.activity !== "sleep" && !dialogueOpen;
+    const nearby = nearestNpc();
+    const canTalk = nearby && nearby.activity.activity !== "sleep" && !nearby.talking && !dialogueOpen;
     promptEl.style.display = canTalk ? "block" : "none";
-    if (canTalk) promptEl.textContent = "E — talk to Mara";
+    if (canTalk) promptEl.textContent = `E — talk to ${nearby.name}`;
     talkbtn.style.display = canTalk && "ontouchstart" in window ? "flex" : "none";
 
     requestAnimationFrame(frame);

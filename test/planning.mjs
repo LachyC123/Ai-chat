@@ -32,16 +32,31 @@ check("accepts a valid plan", JSON.stringify(SIM.validatePlan(JSON.stringify(GOO
 check("tolerates prose/fences around the array",
   SIM.validatePlan("Here is the plan:\n```json\n" + JSON.stringify(GOOD) + "\n```\nDone!") !== null);
 
+// Freedom (Phase 4): a lazy no-work day at the park is a perfectly valid
+// plan — nothing is forced.
+const LAZY = [
+  ["09:30", "wake", "home", "sleeping in"],
+  ["11:00", "park_time", "park", "dozing on a bench"],
+  ["17:00", "supper", "home", "early supper"],
+  ["21:00", "sleep", "home", "sleeping"],
+];
+check("accepts a lazy skip-work park day", SIM.validatePlan(JSON.stringify(LAZY)) !== null);
+check("accepts a minimal 3-entry day", SIM.validatePlan(JSON.stringify([
+  ["08:00", "wake", "home", "a very slow day"],
+  ["14:00", "park_time", "park", "an afternoon outside"],
+  ["21:00", "sleep", "home", "sleeping"],
+])) !== null);
+
 const BAD = [
   ["not json at all", "well, she should probably bake"],
-  ["too few entries", JSON.stringify(GOOD.slice(0, 3))],
+  ["too few entries", JSON.stringify(GOOD.slice(0, 2))],
   ["too many entries", JSON.stringify([...GOOD, ...GOOD])],
   ["unknown place", JSON.stringify(GOOD.map((e, i) => i === 2 ? ["09:30", "errand", "tavern", "x"] : e))],
   ["non-chronological", JSON.stringify([GOOD[1], GOOD[0], ...GOOD.slice(2)])],
   ["duplicate time", JSON.stringify(GOOD.map((e, i) => i === 1 ? ["06:30", "open_shop", "bakery", "x"] : e))],
   ["doesn't end with sleep", JSON.stringify([...GOOD.slice(0, 5), ["22:00", "party", "home", "up late"]])],
   ["sleep away from home", JSON.stringify([...GOOD.slice(0, 5), ["22:00", "sleep", "market", "zzz"]])],
-  ["first anchor too late", JSON.stringify([["09:00", "wake", "home", "late"], ...GOOD.slice(1)])],
+  ["first anchor too late", JSON.stringify([["11:00", "wake", "home", "very late"], ...GOOD.slice(1)])],
   ["bad time format", JSON.stringify(GOOD.map((e, i) => i === 0 ? ["6:30", "wake", "home", "x"] : e))],
   ["bad activity id", JSON.stringify(GOOD.map((e, i) => i === 0 ? ["06:30", "Wake Up!", "home", "x"] : e))],
   ["overlong label", JSON.stringify(GOOD.map((e, i) => i === 0 ? ["06:30", "wake", "home", "x".repeat(61)] : e))],
@@ -180,6 +195,61 @@ const CUSTOM = [
   check("null response yields null turn", r === null);
   check("no memory recorded for failed turn", npc.memories.length === memsBefore);
   check("no conversation recorded for failed turn", npc.conversation.length === 0);
+}
+
+// ---- NPC-to-NPC conversations (Phase 4) --------------------------------------
+{
+  const st = SIM.createState();
+  const [a, b] = st.npcs; // Mara, Tomas
+  SIM.tick(st, 0.1);
+
+  // no LLM -> no conversations, ever
+  a.x = b.x = 10; a.y = b.y = 7;
+  check("no convo pair without LLM", SIM.findConvoPair(st) === null);
+
+  SIM.setLLM(st, async ({ prompt }) =>
+    prompt.includes("You speak first") ? "Ovens are running hot today, Tomas."
+      : "Aye — third batch already. Edith asked after you earlier.");
+
+  // too far apart -> no pair
+  b.x = 20;
+  check("no pair when far apart", SIM.findConvoPair(st) === null);
+
+  // adjacent -> pair found once, then cooldown blocks re-trigger
+  b.x = 10.5; b.y = 7;
+  const pair = SIM.findConvoPair(st);
+  check("pair found when adjacent", pair && pair[0].id === "npc_mara" && pair[1].id === "npc_tomas");
+  check("cooldown blocks immediate re-pair", SIM.findConvoPair(st) === null);
+
+  const heard = [];
+  const turns = await SIM.runNpcConversation(st, pair[0], pair[1], {
+    onLine: (speaker, line) => heard.push(`${speaker.name}: ${line}`),
+  });
+  check("conversation alternates for the full turn cap",
+    turns.length === SIM.NPC_CONVO_MAX_TURNS, String(turns.length));
+  check("speakers alternate", turns[0].speaker === "Mara" && turns[1].speaker === "Tomas");
+  check("onLine saw every line", heard.length === turns.length);
+  check("both remember the chat",
+    pair[0].memories.some((mm) => mm.type === "dialogue" && mm.text.startsWith("Chatted with Tomas")) &&
+    pair[1].memories.some((mm) => mm.type === "dialogue" && mm.text.startsWith("Chatted with Mara")));
+  check("talking flags released", !pair[0].talking && !pair[1].talking);
+  check("activeConvo cleared", st.activeConvo === null);
+  check("one call per line", st.modelCalls.fable5 === turns.length, String(st.modelCalls.fable5));
+
+  // cooldown expiry re-enables the pair
+  st.clock.minutes += SIM.NPC_CONVO_COOLDOWN_MIN + 1;
+  check("pair eligible again after cooldown", SIM.findConvoPair(st) !== null);
+}
+
+// Sleeping NPCs never chat
+{
+  const st = SIM.createState();
+  SIM.setLLM(st, async () => "zzz");
+  SIM.tick(st, 0.1);
+  const [a, b] = st.npcs;
+  a.x = b.x = 10; a.y = b.y = 7;
+  a.activity = { activity: "sleep", place: "home", label: "sleeping" };
+  check("sleepers don't start conversations", SIM.findConvoPair(st) === null);
 }
 
 // tick raises needsPlan each morning
