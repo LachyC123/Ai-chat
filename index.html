@@ -113,9 +113,9 @@ const SIM = (() => {
   const TILE = 16, MAP_W = 40, MAP_H = 28;
   const DAY_REAL_SECONDS = 600;               // 1 in-game day = 10 real minutes
   const T = { GRASS:0, PATH:1, WATER:2, TREE:3, WALL:4, ROOF:5, DOOR:6, STALL:7, FLOWER:8,
-              FLOOR:9, OVEN:10, COUNTER:11, SHELF:12, TABLE:13, BENCH:14 };
+              FLOOR:9, OVEN:10, COUNTER:11, SHELF:12, TABLE:13, BENCH:14, BUNK:15 };
   const SOLID = new Set([T.WATER, T.TREE, T.WALL, T.ROOF, T.STALL,
-                         T.OVEN, T.COUNTER, T.SHELF, T.TABLE, T.BENCH]);
+                         T.OVEN, T.COUNTER, T.SHELF, T.TABLE, T.BENCH, T.BUNK]);
 
   // Deterministic PRNG so map decoration is identical in browser and headless runs.
   function mulberry32(seed) {
@@ -154,7 +154,19 @@ const SIM = (() => {
       open_hours: null, rect: { x: 33, y: 15, w: 5, h: 4 }, door: { x: 35, y: 18 } },
     { id: "building_edith_cottage", name: "Edith's Cottage", function: "home", owner: "npc_edith",
       open_hours: null, rect: { x: 11, y: 15, w: 4, h: 4 }, door: { x: 12, y: 18 } },
+    { id: "building_station", name: "Constable's Station", function: "work", owner: "npc_bram",
+      open_hours: null, rect: { x: 25, y: 15, w: 6, h: 4 }, door: { x: 28, y: 18 },
+      interior: {
+        objects: [
+          { tile: "BUNK", at: [[26, 16]] },    // the cell cot
+          { tile: "TABLE", at: [[29, 16]] },   // Bram's desk
+        ],
+      },
+      cell: { x: 26, y: 17 } },
+    { id: "building_hideout", name: "Old Boat Shed", function: "home", owner: "npc_silas",
+      open_hours: null, rect: { x: 31, y: 22, w: 5, h: 4 }, door: { x: 33, y: 25 } },
   ];
+  const STATION = () => BUILDINGS.find((b) => b.id === "building_station");
 
   // The park: benches by the pond, a strip of path, open to everyone.
   const PARK_BENCHES = [[11, 22], [13, 24]];
@@ -197,6 +209,7 @@ const SIM = (() => {
     for (let x = 11; x <= 14; x++) set(x, 20, T.PATH);        // cottage row to plaza
     for (let y = 21; y <= 24; y++) set(12, y, T.PATH);        // park path
     set(13, 23, T.PATH);
+    for (let x = 32; x <= 34; x++) set(x, 26, T.PATH);        // boat shed yard
 
     // Market plaza
     for (let y = 15; y <= 21; y++)
@@ -468,39 +481,166 @@ const SIM = (() => {
     ["21:00", "sleep",        "home",   "sleeping"],
   ];
 
+  const BRAM_ANCHORS = [
+    ["06:30", "wake",          "home",   "morning briefing with himself"],
+    ["08:00", "patrol_market", "market", "patrolling the market"],
+    ["11:30", "patrol_park",   "park",   "walking the park beat"],
+    ["13:00", "paperwork",     "home",   "paperwork at the station"],
+    ["14:30", "patrol_market", "market", "afternoon market patrol"],
+    ["17:00", "rounds",        "bakery", "evening rounds at the bakery"],
+    ["19:30", "station_night", "home",   "back at the station"],
+    ["22:30", "sleep",         "home",   "sleeping"],
+  ];
+  const SILAS_ANCHORS = [
+    ["07:30", "wake",            "home",   "waking at the boat shed"],
+    ["09:00", "fishing",         "park",   "fishing at the pond"],
+    ["11:00", "market_business", "market", "working the market crowd"],
+    ["14:00", "lie_low",         "home",   "lying low at the shed"],
+    ["16:00", "market_evening",  "market", "one more pass of the market"],
+    ["19:30", "den_time",        "home",   "back at the shed"],
+    ["23:00", "sleep",           "home",   "sleeping"],
+  ];
+  const REN_ANCHORS = [
+    ["08:00", "wake",          "home",   "waking at the boat shed"],
+    ["10:00", "market_rounds", "market", "drifting through the market"],
+    ["14:00", "park_watch",    "park",   "idling at the park"],
+    ["16:30", "den_time",      "home",   "back at the shed"],
+    ["22:30", "sleep",         "home",   "sleeping"],
+  ];
+  const PIP_ANCHORS = [
+    ["08:30", "wake",       "home",   "waking at the boat shed"],
+    ["09:30", "bakery_run", "bakery", "fetching bread for the crew"],
+    ["11:00", "lookout",    "market", "loitering near the stalls"],
+    ["13:30", "park_time",  "park",   "skipping stones at the pond"],
+    ["17:00", "den_time",   "home",   "back at the shed"],
+    ["22:00", "sleep",      "home",   "sleeping"],
+  ];
+
   const NPC_DEFS = [
     { id: "npc_mara", name: "Mara", role: "baker and owner of the bakery",
       traits: ["warm", "gossipy", "proud"], pronoun: "she",
+      wants: "the bakery bustling and the town's gossip flowing through her shop",
+      goal: "make the bakery the beating heart of the town",
       home: "building_bakery_house", workplace: "building_bakery", stationOffset: 0,
       anchors: MARA_ANCHORS, inventory: ["bread_loaf_x4", "spare_key"],
       relationships: {
         npc_tomas: { affinity: 0.6, summary: "Trusts him since he fixed her oven; a good hire." },
         npc_edith: { affinity: 0.4, summary: "A dependable regular with strong opinions about rye." },
+        npc_bram:  { affinity: 0.5, summary: "The constable takes his evening bun very seriously." },
+        npc_silas: { affinity: 0.1, summary: "A fisherman who never seems to sell any fish." },
+        npc_ren:   { affinity: 0.0, summary: "Drifts around the market a lot. Never buys." },
+        npc_pip:   { affinity: 0.3, summary: "Sweet boy, buys bread daily. Too thin, though." },
         player:    { affinity: 0.1, summary: "Hasn't formed a strong opinion yet." },
       },
       locations: { market: { x: 19, y: 18 }, park: PARK_SPOTS[0] } },
     { id: "npc_tomas", name: "Tomas", role: "baker's assistant",
       traits: ["quiet", "practical", "kind"], pronoun: "he",
+      wants: "steady work and no trouble",
+      goal: "save enough to open his own workshop one day",
       home: "building_tomas_house", workplace: "building_bakery", stationOffset: 1,
       anchors: TOMAS_ANCHORS, inventory: ["toolbox"],
       relationships: {
         npc_mara:  { affinity: 0.7, summary: "She gave him work when nobody else would." },
         npc_edith: { affinity: 0.3, summary: "Sweet old lady; always asks after his mother." },
+        npc_bram:  { affinity: 0.4, summary: "Decent sort. Keeps the peace without swagger." },
+        npc_silas: { affinity: -0.1, summary: "Something's off about that man's fishing." },
+        npc_ren:   { affinity: 0.0, summary: "Barely knows her." },
+        npc_pip:   { affinity: 0.2, summary: "Kid could use a proper trade." },
         player:    { affinity: 0.0, summary: "A stranger, so far." },
       },
       locations: { market: { x: 18, y: 17 }, park: PARK_SPOTS[1] } },
     { id: "npc_edith", name: "Edith", role: "retired seamstress",
       traits: ["sharp-tongued", "nostalgic", "kind-hearted"], pronoun: "she",
+      wants: "company, fresh bread, and to feel useful",
+      goal: "teach somebody to sew properly before her hands give out",
       home: "building_edith_cottage", workplace: null,
       anchors: EDITH_ANCHORS, inventory: ["knitting_needles"],
       relationships: {
         npc_mara:  { affinity: 0.6, summary: "Buys a seeded loaf most mornings; likes her gossip." },
         npc_tomas: { affinity: 0.3, summary: "A polite boy who carries her basket sometimes." },
+        npc_bram:  { affinity: 0.5, summary: "Knew his mother. Good family." },
+        npc_silas: { affinity: 0.2, summary: "Charming, in the way that makes you count your rings." },
+        npc_ren:   { affinity: 0.1, summary: "Restless girl. Reminds her of herself, once." },
+        npc_pip:   { affinity: 0.5, summary: "That boy needs a grandmother more than a gang of friends." },
         player:    { affinity: 0.0, summary: "A new face in town." },
       },
-      // non-staff stand in FRONT of the bakery counter as customers
       bakerySpot: { x: 10, y: 9 },
       locations: { market: { x: 20, y: 19 }, park: PARK_SPOTS[2] } },
+    { id: "npc_bram", name: "Bram", role: "town constable",
+      traits: ["dutiful", "observant", "fair"], pronoun: "he",
+      wants: "a quiet, orderly town where nobody locks their doors",
+      goal: "catch whoever has been working the market crowds",
+      isOfficer: true,
+      home: "building_station", workplace: null,
+      anchors: BRAM_ANCHORS, inventory: ["ledger", "iron_key"],
+      relationships: {
+        npc_mara:  { affinity: 0.5, summary: "Her evening bun is the best part of the rounds." },
+        npc_tomas: { affinity: 0.4, summary: "Honest worker. Notices things, too." },
+        npc_edith: { affinity: 0.5, summary: "She hears everything in this town. Useful. Terrifying." },
+        npc_silas: { affinity: -0.2, summary: "A fisherman with dry boots. Watching him." },
+        npc_ren:   { affinity: -0.1, summary: "Quick hands, quick eyes. Watching her too." },
+        npc_pip:   { affinity: 0.1, summary: "That boy is in bad company and knows it." },
+        player:    { affinity: 0.0, summary: "New arrival. No record. Yet." },
+      },
+      bakerySpot: { x: 11, y: 9 },
+      locations: { market: { x: 19, y: 17 }, park: { x: 14, y: 21 } } },
+    { id: "npc_silas", name: "Silas", role: "fisherman",
+      traits: ["calculating", "charming", "patient"], pronoun: "he",
+      wants: "easy coin and no attention",
+      goal: "keep the crew fed without the constable ever looking his way",
+      gang: true, cred: 3, homeSpot: { x: 33, y: 26 },
+      secret: "he runs the Mudlarks, the town's petty thieving crew; the fishing is a cover",
+      home: "building_hideout", workplace: null,
+      anchors: SILAS_ANCHORS, inventory: ["fishing_rod", "lockpicks"],
+      relationships: {
+        npc_ren:   { affinity: 0.6, summary: "His best hands. Too hungry for her own good." },
+        npc_pip:   { affinity: 0.4, summary: "Soft, but loyal. Needs watching, not scolding." },
+        npc_bram:  { affinity: -0.5, summary: "The constable smells something. Stay boring." },
+        npc_mara:  { affinity: 0.2, summary: "Bakers hear everything. Be charming, buy bread." },
+        npc_edith: { affinity: 0.1, summary: "The old woman's eyes miss nothing. Caution." },
+        npc_tomas: { affinity: 0.0, summary: "The assistant looks at him too long." },
+        player:    { affinity: 0.0, summary: "Unknown quantity. Could be useful. Could be trouble." },
+      },
+      bakerySpot: { x: 10, y: 9 },
+      locations: { market: { x: 21, y: 17 }, park: { x: 11, y: 21 } } },
+    { id: "npc_ren", name: "Ren", role: "odd-jobber",
+      traits: ["restless", "light-fingered", "fiercely loyal"], pronoun: "she",
+      wants: "excitement, and Silas's approval",
+      goal: "prove she can run a job alone",
+      gang: true, cred: 2, homeSpot: { x: 32, y: 26 },
+      secret: "she is the Mudlarks' lieutenant and the best pickpocket in town",
+      home: "building_hideout", workplace: null,
+      anchors: REN_ANCHORS, inventory: ["dice"],
+      relationships: {
+        npc_silas: { affinity: 0.7, summary: "He took her in. She'd walk into fire for him." },
+        npc_pip:   { affinity: 0.5, summary: "Little brother she never asked for." },
+        npc_bram:  { affinity: -0.4, summary: "The constable's eyes follow her. Keep moving." },
+        npc_mara:  { affinity: 0.1, summary: "The baker talks too much. Useful, sometimes." },
+        npc_edith: { affinity: 0.2, summary: "The old lady slipped her a bun once. Confusing." },
+        npc_tomas: { affinity: 0.0, summary: "Quiet ones are the ones to watch." },
+        player:    { affinity: 0.0, summary: "New mark? New problem? Undecided." },
+      },
+      bakerySpot: { x: 10, y: 9 },
+      locations: { market: { x: 17, y: 16 }, park: { x: 14, y: 23 } } },
+    { id: "npc_pip", name: "Pip", role: "errand boy",
+      traits: ["jumpy", "eager", "soft-hearted"], pronoun: "he",
+      wants: "to belong somewhere, and maybe to stop feeling guilty",
+      goal: "figure out whether crew life is really for him",
+      gang: true, cred: 1, homeSpot: { x: 34, y: 26 },
+      secret: "he is the Mudlarks' lookout, and he's not sure his heart is in it",
+      home: "building_hideout", workplace: null,
+      anchors: PIP_ANCHORS, inventory: ["slingshot"],
+      relationships: {
+        npc_silas: { affinity: 0.5, summary: "The closest thing to family. Scary, sometimes." },
+        npc_ren:   { affinity: 0.6, summary: "She looks out for him. He'd never admit needing it." },
+        npc_edith: { affinity: 0.5, summary: "She saves him the crusty end bits. He'd hate her knowing what he does." },
+        npc_mara:  { affinity: 0.4, summary: "The bakery smells like the life he maybe wants." },
+        npc_bram:  { affinity: -0.2, summary: "The constable nods at him like he KNOWS." },
+        npc_tomas: { affinity: 0.2, summary: "Tomas said he had good hands for honest work once." },
+        player:    { affinity: 0.1, summary: "New person! Exciting. Suspicious. Both." },
+      },
+      bakerySpot: { x: 11, y: 9 },
+      locations: { market: { x: 22, y: 18 }, park: { x: 13, y: 22 } } },
   ];
 
   function createNPC(def) {
@@ -510,11 +650,16 @@ const SIM = (() => {
       // static sheet (plan §6 agent schema)
       id: def.id, name: def.name, role: def.role,
       traits: def.traits.slice(), pronoun: def.pronoun,
+      wants: def.wants, goal: def.goal, secret: def.secret || null,
+      isOfficer: !!def.isOfficer, gang: !!def.gang,
       home: def.home, workplace: def.workplace,
       schedule_anchors: def.anchors.map(([t, a]) => [t, a]),
       defaultAnchors: def.anchors,
       relationships: JSON.parse(JSON.stringify(def.relationships)),
       inventory: def.inventory.slice(),
+      // crime & law runtime (Phase 5)
+      cred: def.cred || 0, gangRank: null, jailedUntil: null,
+      lastTheftDay: 0, lastReleaseDay: 0, pursuit: null,
       // memory stream (plan §6 memory schema objects)
       memories: [], perceptionCooldowns: {}, lastActivityKey: null,
       // planning (Phase 3)
@@ -523,14 +668,16 @@ const SIM = (() => {
       pendingInterrupt: null, lastReplanAt: null,
       conversation: [],
       // runtime
-      x: home.door.x, y: home.door.y, dir: "down",
+      x: (def.homeSpot || home.door).x, y: (def.homeSpot || home.door).y, dir: "down",
       path: null, pathKey: null, talking: false,
       station: null, stationLabel: null, currentTarget: null,
       stationOffset: def.stationOffset || 0,
       lastPurchaseDay: 0,
       speed: 3.2, // tiles per real second (scaled by timeScale)
       locations: {
-        home:   { x: home.door.x, y: home.door.y },
+        home:   def.homeSpot || (def.home === "building_station"
+          ? { x: 29, y: 17 } // Bram lives at his desk, practically
+          : { x: home.door.x, y: home.door.y }),
         bakery: def.workplace === bakery.id
           ? { x: bakery.workstations.counter.stand.x, y: bakery.workstations.counter.stand.y }
           : (def.bakerySpot || { x: 10, y: 9 }),
@@ -565,6 +712,22 @@ const SIM = (() => {
 
   function setLLM(state, fn) { state.llm = fn; }
 
+  // Shared persona block for every prompt: personality, wants, goals —
+  // and secrets/duties, so each character plays their real dynamics.
+  function personaLines(npc) {
+    let s = `Traits: ${npc.traits.join(", ")}. Wants: ${npc.wants}. Long-term goal: ${npc.goal}.`;
+    if (npc.gang)
+      s += `\nSecret — never reveal it casually: ${npc.secret}. Current standing: ${npc.gangRank} of ${GANG_NAME}. Publicly you are just a ${npc.role}.`;
+    if (npc.isOfficer)
+      s += `\nYou are the law in this town: patrol, notice things, take reports seriously.`;
+    return s;
+  }
+  function wantedNames(state) {
+    return state.crimeLog
+      .filter((c) => c.reported && c.arrestDay === null)
+      .map((c) => byId(state, c.culprit).name);
+  }
+
   async function callFable5(state, req) {
     if (!state.llm) return null;
     state.modelCalls.fable5++;
@@ -582,7 +745,7 @@ const SIM = (() => {
 `You decide how ${npc.name}, a ${npc.role} in a small town, spends the day.
 This is an open-ended life simulation: nothing is scripted and nothing is mandatory. ${workNote}
 They may work, skip a day, linger at the park, visit the bakery or market, call on a friend, or stay home. Follow what the personality, memories and relationships suggest, and let days vary naturally — routines are tendencies, not rules.
-Traits: ${npc.traits.join(", ")}.
+${personaLines(npc)}
 Reply with ONLY a JSON array, no prose, no code fences.
 Each entry: ["HH:MM","activity_id","place","short label"].
 Rules: 3 to 8 entries, strictly chronological; first entry between 05:00 and 10:00; last entry has activity_id "sleep" at home no earlier than 20:00; place must be one of home|bakery|market|park; activity_id is snake_case; labels under 60 characters.`;
@@ -590,8 +753,10 @@ Rules: 3 to 8 entries, strictly chronological; first entry between 05:00 and 10:
       `- [imp ${r.memory.importance}] (${r.memory.timestamp}) ${r.memory.text}`).join("\n") || "- (none yet)";
     const rel = Object.entries(npc.relationships)
       .map(([k, v]) => `${k}: affinity ${v.affinity} — ${v.summary}`).join("\n");
+    const wanted = npc.isOfficer && wantedNames(state).length
+      ? `\nActive cases — bring in: ${wantedNames(state).join(", ")}.` : "";
     const prompt =
-`Day ${state.clock.day}${reason ? `, ${fmtClock(state.clock.minutes)} — adjust the rest of today's plan. Reason: ${reason}` : ""}.
+`Day ${state.clock.day}${reason ? `, ${fmtClock(state.clock.minutes)} — adjust the rest of today's plan. Reason: ${reason}` : ""}.${wanted}
 Notable memories:
 ${mems}
 Relationships:
@@ -660,7 +825,8 @@ ${JSON.stringify(npc.defaultAnchors)}`;
 
   function buildDialoguePrompt(state, npc, retrieved, turns, playerText) {
     const system =
-`You are ${npc.name}, a ${npc.role} in a small pixel-art town. Traits: ${npc.traits.join(", ")}.
+`You are ${npc.name}, a ${npc.role} in a small pixel-art town.
+${personaLines(npc)}
 Stay in character. Reply with a single short line of spoken dialogue (under 35 words). No quotation marks, no narration, no stage directions.`;
     const mems = retrieved.map((r) => `- (${r.memory.timestamp}) ${r.memory.text}`).join("\n")
       || "- (nothing memorable yet)";
@@ -709,6 +875,7 @@ ${npc.name}:`;
       for (let j = i + 1; j < state.npcs.length; j++) {
         const a = state.npcs[i], b = state.npcs[j];
         if (a.talking || b.talking) continue;
+        if (a.jailedUntil || b.jailedUntil) continue;
         if (!a.activity || !b.activity) continue;
         if (a.activity.activity === "sleep" || b.activity.activity === "sleep") continue;
         if (Math.hypot(a.x - b.x, a.y - b.y) > NPC_CONVO_RADIUS) continue;
@@ -727,7 +894,8 @@ ${npc.name}:`;
     const rel = speaker.relationships[listener.id]
       || { affinity: 0, summary: "They barely know each other." };
     const system =
-`You are ${speaker.name}, a ${speaker.role} in a small pixel-art town. Traits: ${speaker.traits.join(", ")}.
+`You are ${speaker.name}, a ${speaker.role} in a small pixel-art town.
+${personaLines(speaker)}
 Stay in character. Reply with a single short line of spoken dialogue (under 30 words). No quotation marks, no narration.`;
     const mems = retrieved.map((r) => `- (${r.memory.timestamp}) ${r.memory.text}`).join("\n")
       || "- (nothing memorable yet)";
@@ -773,6 +941,135 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     return turns;
   }
 
+  // ---- Crime & law (Phase 5) --------------------------------------------
+  // A deterministic cause-and-effect chain the AI layer then reacts to:
+  // theft -> victim + witnesses remember -> a witness near the constable
+  // reports it -> culprit is wanted -> pursuit on sight -> arrest -> a day
+  // in the cell -> gang hierarchy reshuffles (street cred ordering, and an
+  // arrest drops you to the bottom). Every step writes high-importance
+  // memories, so plans, conversations, and gossip all bend around it.
+  const GANG_NAME = "the Mudlarks";
+  const RANK_NAMES = ["leader", "lieutenant", "lookout"];
+  const OFFICER_BLOCK_RADIUS = 6;  // no thefts with the law this close
+  const ARREST_RADIUS = 1.6;
+  const PURSUIT_RADIUS = 9;
+  const JAIL_MINUTES = 1440;       // one full day in the cell
+
+  const byId = (state, id) => state.npcs.find((n) => n.id === id);
+  const gangMembers = (state) => state.npcs.filter((n) => n.gang);
+
+  function refreshGangRanks(state, reason) {
+    const free = gangMembers(state).filter((n) => !n.jailedUntil).sort((a, b) => b.cred - a.cred);
+    for (const n of gangMembers(state)) {
+      const rank = n.jailedUntil ? "locked up"
+        : RANK_NAMES[Math.min(free.indexOf(n), RANK_NAMES.length - 1)];
+      if (rank !== n.gangRank) {
+        const old = n.gangRank;
+        n.gangRank = rank;
+        if (old && !n.jailedUntil)
+          addMemory(state, n, "reflection",
+            `Crew shake-up — ${reason}. I'm the ${rank} of ${GANG_NAME} now.`, { importance: 8 });
+      }
+    }
+  }
+
+  function maybeCommitTheft(state, npc) {
+    if (!npc.gang || npc.jailedUntil) return;
+    if (state.lastCrimeDay === state.clock.day || npc.lastTheftDay === state.clock.day) return;
+    // fresh out of the cell: lie low for a couple of days
+    if (npc.lastReleaseDay && state.clock.day - npc.lastReleaseDay < 2) return;
+    const min = state.clock.minutes;
+    if (min < hm("09:00") || min > hm("18:00")) return;
+    if (Math.hypot(npc.x - npc.locations.market.x, npc.y - npc.locations.market.y) > 1) return;
+    if (state.npcs.some((o) => o.isOfficer && Math.hypot(o.x - npc.x, o.y - npc.y) <= OFFICER_BLOCK_RADIUS)) return;
+    // needs a mark AND crowd cover: at least two civilians in reach
+    const civs = state.npcs
+      .filter((o) => !o.gang && !o.isOfficer && Math.hypot(o.x - npc.x, o.y - npc.y) <= PERCEPTION_RADIUS)
+      .sort((a, b) => Math.hypot(a.x - npc.x, a.y - npc.y) - Math.hypot(b.x - npc.x, b.y - npc.y));
+    if (civs.length < 2) return;
+    const victim = civs[0], witnesses = civs.slice(1);
+    state.lastCrimeDay = state.clock.day;
+    npc.lastTheftDay = state.clock.day;
+    state.crimeLog.push({
+      id: `crime_${state.crimeLog.length + 1}`, day: state.clock.day, ts: absMinutes(state.clock),
+      culprit: npc.id, victim: victim.id, witnesses: witnesses.map((w) => w.id),
+      reported: false, reportedDay: null, arrestDay: null, releaseDay: null,
+    });
+    npc.inventory.push("coin_purse");
+    addMemory(state, npc, "observation",
+      `Lifted ${victim.name}'s coin purse in the market crowd. Clean work.`, { importance: 8 });
+    addMemory(state, victim, "observation",
+      "My coin purse is gone — someone took it right off me in the market crowd!", { importance: 8 });
+    for (const w of witnesses)
+      addMemory(state, w, "observation",
+        `Saw ${npc.name} slip ${victim.name}'s purse away in the market crowd!`, { importance: 9 });
+  }
+
+  function arrest(state, officer, culprit, crime) {
+    crime.arrestDay = state.clock.day;
+    culprit.jailedUntil = absMinutes(state.clock) + JAIL_MINUTES;
+    culprit.talking = false; culprit.needsPlan = false; culprit.pendingInterrupt = null;
+    culprit.path = null; culprit.pathKey = null;
+    // an arrest drops you below everyone on the crew
+    culprit.cred = Math.min(...gangMembers(state).map((n) => n.cred)) - 1;
+    officer.pursuit = null;
+    addMemory(state, officer, "observation",
+      `Arrested ${culprit.name} for the market theft and marched ${culprit.pronoun === "he" ? "him" : "her"} to the cell.`,
+      { importance: 9 });
+    addMemory(state, culprit, "observation",
+      `${officer.name} clapped me in the station cell for the purse job. A full day locked up.`,
+      { importance: 9 });
+    for (const o of state.npcs)
+      if (o !== officer && o !== culprit && Math.hypot(o.x - culprit.x, o.y - culprit.y) <= 5)
+        addMemory(state, o, "observation",
+          `Watched ${officer.name} march ${culprit.name} off to the station.`, { importance: 8 });
+    refreshGangRanks(state, `${culprit.name} got pinched`);
+  }
+
+  function updateLaw(state, officer) {
+    // Witnesses close to the constable report unreported crimes
+    for (const crime of state.crimeLog) {
+      if (crime.reported) continue;
+      for (const wid of crime.witnesses) {
+        const w = byId(state, wid);
+        if (!w || Math.hypot(w.x - officer.x, w.y - officer.y) > 3) continue;
+        crime.reported = true; crime.reportedDay = state.clock.day;
+        const culprit = byId(state, crime.culprit);
+        addMemory(state, w, "dialogue",
+          `Told ${officer.name} what I saw — ${culprit.name} took that purse at the market.`, { importance: 6 });
+        addMemory(state, officer, "dialogue",
+          `${w.name} reported the market theft: ${culprit.name} is the thief. Time to bring ${culprit.pronoun === "he" ? "him" : "her"} in.`,
+          { importance: 9 });
+        break;
+      }
+    }
+    // Pursue and arrest wanted culprits on sight
+    officer.pursuit = null;
+    for (const crime of state.crimeLog) {
+      if (!crime.reported || crime.arrestDay !== null) continue;
+      const culprit = byId(state, crime.culprit);
+      if (!culprit || culprit.jailedUntil) continue;
+      const d = Math.hypot(culprit.x - officer.x, culprit.y - officer.y);
+      if (d <= PURSUIT_RADIUS) {
+        officer.pursuit = culprit.id;
+        if (d <= ARREST_RADIUS) arrest(state, officer, culprit, crime);
+        break;
+      }
+    }
+  }
+
+  function maybeRelease(state, npc) {
+    if (!npc.jailedUntil || absMinutes(state.clock) < npc.jailedUntil) return;
+    npc.jailedUntil = null;
+    npc.needsPlan = true;
+    npc.lastReleaseDay = state.clock.day;
+    const crime = state.crimeLog.find((c) => c.culprit === npc.id && c.arrestDay !== null && c.releaseDay === null);
+    if (crime) crime.releaseDay = state.clock.day;
+    addMemory(state, npc, "observation",
+      "Out of the cell. A day behind bars, and everyone in town saw the arrest.", { importance: 8 });
+    refreshGangRanks(state, `${npc.name} got out of the cell`);
+  }
+
   // ---- Movement / collision -------------------------------------------
   function isSolidAt(map, x, y) {
     const tx = Math.floor(x), ty = Math.floor(y);
@@ -808,9 +1105,32 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
   }
 
   function updateNPC(state, npc, dtReal) {
+    // Jail overrides everything: sit in the cell until the sentence ends
+    maybeRelease(state, npc);
+    if (npc.jailedUntil) {
+      npc.activity = { activity: "jailed", place: "home", label: "locked in the cell" };
+      npc.station = null; npc.stationLabel = null;
+      npc.currentTarget = STATION().cell;
+      moveAlongPath(state, npc, STATION().cell, dtReal);
+      return;
+    }
+
     const act = activityAt(npc, state.clock.minutes);
     npc.activity = act;
     perceive(state, npc);
+    if (npc.gang) maybeCommitTheft(state, npc);
+    if (npc.isOfficer) updateLaw(state, npc);
+
+    // The constable drops his route to chase a wanted culprit on sight
+    if (npc.isOfficer && npc.pursuit) {
+      const culprit = byId(state, npc.pursuit);
+      if (culprit) {
+        npc.stationLabel = `chasing ${culprit.name}!`;
+        npc.currentTarget = { x: Math.round(culprit.x), y: Math.round(culprit.y) };
+        moveAlongPath(state, npc, npc.currentTarget, dtReal);
+        return;
+      }
+    }
 
     // Resolve the movement target: staff rotate bakery workstations
     // (offset per NPC so colleagues don't stack), visitors take the
@@ -835,7 +1155,10 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       if (act.place === "bakery") maybeBuyBread(state, npc);
     }
     npc.currentTarget = target;
+    moveAlongPath(state, npc, target, dtReal);
+  }
 
+  function moveAlongPath(state, npc, target, dtReal) {
     if (npc.talking) { npc.moving = false; return; }
     const distToTarget = Math.hypot(npc.x - target.x, npc.y - target.y);
     if (distToTarget < 0.1) { npc.path = null; npc.moving = false; return; }
@@ -865,7 +1188,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
 
   // ---- State + tick ----------------------------------------------------
   function createState() {
-    return {
+    const state = {
       map: buildMap(),
       buildings: BUILDINGS,
       clock: { day: 1, minutes: hm("06:50") },
@@ -874,6 +1197,8 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       npcs: NPC_DEFS.map(createNPC),
       // NPC-to-NPC conversation bookkeeping (Phase 4)
       activeConvo: null, convoCooldowns: {},
+      // Crime & law (Phase 5)
+      crimeLog: [], lastCrimeDay: 0,
       // Memory infrastructure (Phase 2) + LLM provider (Phase 3)
       memCounter: 1, embedQueue: [], embedder: null, llm: null,
       // Cost-ceiling instrumentation (plan §8): fable5 stays ZERO until
@@ -883,6 +1208,8 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       // so the headless harness can catch regressions.
       modelCalls: { fable5: 0, embeddings: 0 },
     };
+    refreshGangRanks(state, "day one"); // silent initial ranking (old rank is null)
+    return state;
   }
 
   function tick(state, dtReal) {
@@ -892,7 +1219,9 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     for (const npc of state.npcs) {
       // Daily planning trigger (plan §3.5): one Fable 5 call per NPC per
       // in-game morning. The flag is consumed by the planning pump.
-      if (c.minutes >= hm("06:00") && npc.lastPlanDay !== c.day) npc.needsPlan = true;
+      // Jailed NPCs don't plan; they replan on release.
+      if (!npc.jailedUntil && c.minutes >= hm("06:00") && npc.lastPlanDay !== c.day)
+        npc.needsPlan = true;
       updateNPC(state, npc, dtReal);
     }
   }
@@ -907,6 +1236,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     setEmbedder, embedText, processEmbedQueue, retrieveMemories,
     setLLM, buildPlanningPrompt, validatePlan, generatePlan, takeInterrupt,
     buildDialoguePrompt, dialogueTurn, findConvoPair, runNpcConversation,
+    refreshGangRanks, wantedNames, GANG_NAME, STATION,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -952,14 +1282,17 @@ if (typeof module !== "undefined") module.exports = SIM;
           current_plan: n.current_plan, lastPlanDay: n.lastPlanDay,
           lastReplanAt: n.lastReplanAt, lastPurchaseDay: n.lastPurchaseDay,
           planFailures: n.planFailures, inventory: n.inventory,
+          cred: n.cred, gangRank: n.gangRank, jailedUntil: n.jailedUntil,
+          lastTheftDay: n.lastTheftDay, lastReleaseDay: n.lastReleaseDay,
           memories: n.memories.map((m) =>
             ({ ...m, embedding: m.embedding ? vecEnc(m.embedding) : null })),
         };
       }
       localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 4, clock: state.clock, memCounter: state.memCounter,
+        v: 5, clock: state.clock, memCounter: state.memCounter,
         player: { x: state.player.x, y: state.player.y },
         convoCooldowns: state.convoCooldowns,
+        crimeLog: state.crimeLog, lastCrimeDay: state.lastCrimeDay,
         npcs,
       }));
     } catch (e) { console.warn("save failed", e); }
@@ -969,10 +1302,12 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 4) return; // older single-NPC saves start fresh
+      if (s.v !== 5) return; // older saves start fresh
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
       state.convoCooldowns = s.convoCooldowns || {};
+      state.crimeLog = s.crimeLog || [];
+      state.lastCrimeDay = s.lastCrimeDay || 0;
       for (const n of state.npcs) {
         const d = s.npcs[n.id];
         if (!d) continue;
@@ -984,6 +1319,11 @@ if (typeof module !== "undefined") module.exports = SIM;
         if (d.lastPurchaseDay) n.lastPurchaseDay = d.lastPurchaseDay;
         if (d.planFailures) n.planFailures = d.planFailures;
         if (d.inventory) n.inventory = d.inventory;
+        if (d.cred !== undefined) n.cred = d.cred;
+        if (d.gangRank !== undefined) n.gangRank = d.gangRank;
+        if (d.jailedUntil !== undefined) n.jailedUntil = d.jailedUntil;
+        if (d.lastTheftDay) n.lastTheftDay = d.lastTheftDay;
+        if (d.lastReleaseDay) n.lastReleaseDay = d.lastReleaseDay;
         n.memories = d.memories.map((m) =>
           ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
         state.embedQueue.push(...n.memories.filter((m) => !m.embedding));
@@ -1100,7 +1440,7 @@ if (typeof module !== "undefined") module.exports = SIM;
   // ---- Tile atlas (procedural pixel-art placeholders; Kenmi/Higgsfield
   //      art replaces this atlas in the world-fill phase) ----------------
   const atlas = document.createElement("canvas");
-  atlas.width = TILE * 15; atlas.height = TILE;
+  atlas.width = TILE * 16; atlas.height = TILE;
   {
     const a = atlas.getContext("2d");
     const rnd = (() => { let s = 42; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
@@ -1155,6 +1495,9 @@ if (typeof module !== "undefined") module.exports = SIM;
     speckle(T.BENCH, "#4f9648", "#437f3d", 8);
     px(T.BENCH, 1, 5, 14, 3, "#8f6238"); px(T.BENCH, 1, 9, 14, 2, "#a87844");
     px(T.BENCH, 2, 8, 2, 6, "#6d4a2f"); px(T.BENCH, 12, 8, 2, 6, "#6d4a2f");
+    px(T.BUNK, 0, 0, TILE, TILE, "#b08850");
+    px(T.BUNK, 1, 4, 14, 8, "#6d4a2f"); px(T.BUNK, 2, 5, 12, 4, "#8a97a8");
+    px(T.BUNK, 2, 5, 4, 4, "#d8d2c0");
   }
 
   // Prerender the static map once.
@@ -1191,6 +1534,10 @@ if (typeof module !== "undefined") module.exports = SIM;
     npc_mara:  { hair: "#4a3226", tunic: "#a8503a", pants: "#5c452c", apron: "#f2ead8" },
     npc_tomas: { hair: "#2e2620", tunic: "#4a6741", pants: "#3a3145", apron: "#d8d2c0" },
     npc_edith: { hair: "#d8d4e0", tunic: "#7a5a8a", pants: "#4a3f55" },
+    npc_bram:  { hair: "#3a3630", tunic: "#2f4468", pants: "#26222e" },
+    npc_silas: { hair: "#55483a", tunic: "#2f5e5a", pants: "#3a3630" },
+    npc_ren:   { hair: "#7a2e26", tunic: "#8a4a2e", pants: "#3a3145" },
+    npc_pip:   { hair: "#b88a3a", tunic: "#c0a040", pants: "#5c452c" },
   };
 
   // ---- Day/night tint keyframes (minute, [r,g,b,alpha]) ------------------
@@ -1373,6 +1720,10 @@ if (typeof module !== "undefined") module.exports = SIM;
     npc_mara:  null, // uses her activity lines below
     npc_tomas: "Oh — afternoon. Need something, or just looking?",
     npc_edith: "Well now, a new face. Come here often? No? You should.",
+    npc_bram:  "Afternoon. New in town? Keep your purse on the inside pocket.",
+    npc_silas: "Fine day for it, friend. Whatever 'it' is for you.",
+    npc_ren:   "You're standing in my spot. ...Kidding. Mostly. What?",
+    npc_pip:   "Oh! Hello! I wasn't doing anything. Why?",
   };
   function greetingFor(npc) {
     if (npc.id === "npc_mara") return (LINES[npc.activity.activity] || LINES.tend_shop)[0];

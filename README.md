@@ -4,14 +4,26 @@ A persistent pixel-art town where NPCs have their own daily routines, memories,
 relationships, and free will — built on the Stanford "Generative Agents"
 (Smallville) architecture. Full design doc: [`docs/project-plan.pdf`](docs/project-plan.pdf).
 
-**The cast (v1):** Mara (baker, owns the bakery), Tomas (her assistant), and
-Edith (retired seamstress, bakery regular). The town has the bakery (full
-interior), three homes, a market square, and a park by the pond. With an
-Anthropic key set, everything they do is AI-decided: each character plans their
-own day (skipping work for the park is a valid choice — routines are
-tendencies, not rules), chats with whoever they run into, and remembers all of
-it. The bakery runs like a bakery because its people choose to run it, not
-because a script says so.
+**The cast (v1):** seven characters, each with their own personality, wants,
+and long-term goal — Mara (baker, owns the bakery), Tomas (her assistant),
+Edith (retired seamstress, bakery regular), Constable Bram (patrols, takes
+reports, makes arrests), and the Mudlarks — the town's petty thieving crew:
+Silas ("fisherman", secretly the leader), Ren (lieutenant, best pickpocket in
+town), and Pip (soft-hearted lookout who isn't sure crew life is for him).
+The town has the bakery (full interior), homes for everyone, the constable's
+station with a jail cell, the gang's boat-shed hideout, a market square, and a
+park by the pond.
+
+With an Anthropic key set, everything they do is AI-decided: each character
+plans their own day (skipping work for the park is a valid choice — routines
+are tendencies, not rules), chats with whoever they run into, and remembers
+all of it. Underneath sits a deterministic cause-and-effect layer the AI
+reacts to: pickpocketing at the market → victim and witnesses remember → a
+witness runs into Bram and reports it → culprit is wanted → pursuit on sight →
+arrest → a day in the cell → **the gang hierarchy reshuffles** (an arrest
+drops you below everyone; ranks recompute, promotions become memories, and
+the old boss comes back at the bottom). Every link in that chain writes
+high-importance memories, so plans, conversations, and gossip bend around it.
 
 **The cast (all fully AI-driven when a key is set):**
 - **Mara** — baker and owner of the bakery (warm, gossipy, proud)
@@ -113,9 +125,16 @@ calls (never per-tick), `fable5` still zero (instrumented via
       05:00-10:00); NPC-to-NPC perception and spontaneous model-driven conversations
       (per-pair cooldown, turn cap, one at a time, both sides remember); bread
       buying/selling between customer and staff; per-NPC memory panel tabs.
-- [ ] **5. Reflection + more cast/places** — reflection cadence (insights compound into
-      opinions), relationship summaries that evolve, more NPCs and locations.
-- [ ] **5b. World fill** — remaining buildings, items, shop hours, pathfinding polish.
+- [x] **5. Roles & dynamics** — seven-NPC cast with per-character wants/goals/secrets
+      woven into every prompt; Constable Bram (patrols, reports, pursuit, arrests) and
+      the Mudlarks gang (cred-ordered hierarchy, cover identities); station with jail
+      cell + boat-shed hideout; deterministic crime chain (theft → witnesses → report →
+      wanted → arrest → one-day sentence → rank reshuffle → lie-low period) that the
+      AI planning/conversation layer reacts to.
+- [ ] **6a. Reflection** — reflection cadence (insights compound into opinions),
+      relationship summaries that evolve from what actually happens.
+- [ ] **6b. World fill** — remaining buildings, items, shop hours, pathfinding polish,
+      more cast and places.
 - [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
 
 ## Architecture notes (Phase 1)

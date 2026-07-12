@@ -252,6 +252,57 @@ const CUSTOM = [
   check("sleepers don't start conversations", SIM.findConvoPair(st) === null);
 }
 
+// ---- Personas, secrets, and duty in prompts (Phase 5) -----------------------
+{
+  const st = SIM.createState();
+  const bramN = st.npcs.find((n) => n.id === "npc_bram");
+  const silasN = st.npcs.find((n) => n.id === "npc_silas");
+  SIM.tick(st, 0.1);
+
+  const pSilas = SIM.buildPlanningPrompt(st, silasN, { retrieved: [] });
+  check("gang planning knows the secret", pSilas.system.includes("Mudlarks"));
+  check("gang planning knows the rank", pSilas.system.includes("leader of the Mudlarks"));
+  check("planning carries wants", pSilas.system.includes("easy coin"));
+  check("planning carries goal", pSilas.system.includes("constable ever looking"));
+
+  const dSilas = SIM.buildDialoguePrompt(st, silasN, [], [], "nice weather");
+  check("gang dialogue keeps the cover", dSilas.system.includes("never reveal it casually"));
+
+  const pBram = SIM.buildPlanningPrompt(st, bramN, { retrieved: [] });
+  check("officer planning carries duty", pBram.system.includes("You are the law"));
+  check("no active cases at start", !pBram.prompt.includes("Active cases"));
+
+  // report a crime -> Bram's planning prompt lists the wanted name
+  st.crimeLog.push({ id: "crime_t", day: 1, ts: 0, culprit: "npc_ren", victim: "npc_mara",
+    witnesses: [], reported: true, reportedDay: 1, arrestDay: null, releaseDay: null });
+  const pBram2 = SIM.buildPlanningPrompt(st, bramN, { retrieved: [] });
+  check("wanted list reaches the officer's plan", pBram2.prompt.includes("Active cases") && pBram2.prompt.includes("Ren"));
+  check("wantedNames exposes it", SIM.wantedNames(st).join(",") === "Ren");
+}
+
+// ---- Gang hierarchy math ----------------------------------------------------
+{
+  const st = SIM.createState();
+  const [silasN, renN, pipN] = ["npc_silas", "npc_ren", "npc_pip"].map((id) => st.npcs.find((n) => n.id === id));
+  check("initial ranks", silasN.gangRank === "leader" && renN.gangRank === "lieutenant" && pipN.gangRank === "lookout");
+  check("initial ranking is silent", !silasN.memories.some((m) => m.text.startsWith("Crew shake-up")));
+
+  // jail the leader: everyone below steps up, arrestee drops below all
+  silasN.jailedUntil = 99999;
+  silasN.cred = Math.min(silasN.cred, renN.cred, pipN.cred) - 1;
+  SIM.refreshGangRanks(st, "Silas got pinched");
+  check("jailed leader loses the seat", silasN.gangRank === "locked up");
+  check("lieutenant takes over", renN.gangRank === "leader");
+  check("lookout steps up", pipN.gangRank === "lieutenant");
+  check("promotions are remembered", renN.memories.some((m) => m.text.includes("I'm the leader of the Mudlarks now")));
+
+  // release: the old boss comes back at the bottom
+  silasN.jailedUntil = null;
+  SIM.refreshGangRanks(st, "Silas got out");
+  check("old boss returns at the bottom", silasN.gangRank === "lookout");
+  check("new order holds", renN.gangRank === "leader" && pipN.gangRank === "lieutenant");
+}
+
 // tick raises needsPlan each morning
 {
   const st = SIM.createState(); // day 1, 06:50

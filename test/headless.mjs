@@ -17,7 +17,7 @@ const SIM = mod.exports;
 const DAYS = Number(process.argv[2] || 3);
 const DT = 0.1; // real seconds per step
 const state = SIM.createState();
-const [mara, tomas, edith] = state.npcs;
+const [mara, tomas, edith, bram, silas, ren, pip] = state.npcs;
 
 let failures = 0;
 const fail = (msg) => { failures++; console.error(`FAIL: ${msg}`); };
@@ -37,6 +37,9 @@ const CHECKS = [
   ["11:30", "Edith at the park",       () => near(edith, edith.locations.park)],
   ["17:30", "Edith at the park",       () => near(edith, edith.locations.park)],
   ["22:00", "Edith at home",           () => near(edith, edith.locations.home)],
+  ["09:00", "Bram patrolling the market", () => near(bram, bram.locations.market)],
+  ["23:30", "the gang back at the shed",  () => [silas, ren, pip].every((n) =>
+    n.jailedUntil || near(n, n.locations.home, 2.5))],
 ];
 
 let lastMin = state.clock.minutes;
@@ -74,6 +77,18 @@ for (let i = 0; i < totalSteps; i++) {
     const crossed = day === lastDay ? (lastMin < mark && minutes >= mark)
                                     : (lastMin < mark + 1440 && minutes + 1440 >= mark + 1440);
     if (crossed && !ok()) fail(`day ${day} ${t}: expected ${desc}`);
+  }
+
+  // Jail spot check: day-2 noon — if the first culprit was arrested day 1,
+  // they are mid-sentence and must be sitting inside the station.
+  if (day === 2 && lastMin < SIM.hm("12:00") && minutes >= SIM.hm("12:00")) {
+    const crime = state.crimeLog[0];
+    const culprit = crime && crime.arrestDay === 1 && state.npcs.find((n) => n.id === crime.culprit);
+    if (culprit) {
+      if (!culprit.jailedUntil) fail("day 2 noon: first culprit should still be jailed");
+      else if (!SIM.insideBuilding(SIM.STATION(), culprit.x, culprit.y))
+        fail(`day 2 noon: jailed ${culprit.name} should be inside the station, is at (${culprit.x.toFixed(1)}, ${culprit.y.toFixed(1)})`);
+    }
   }
 
   lastMin = minutes; lastDay = day;
@@ -126,11 +141,53 @@ const ovenMems = [mara, tomas].flatMap((n) => n.memories.filter((mm) => mm.text.
 if (ovenMems.length < DAYS || ovenMems.length > 14 * DAYS)
   fail(`oven-session memories off: ${ovenMems.length} over ${DAYS} days`);
 
-// The bakery runs like a bakery: Edith buys, staff sell — every day
-const bought = edith.memories.filter((mm) => mm.text.startsWith("Bought a fresh loaf"));
+// The bakery runs like a bakery: visitors buy, staff sell — mirrored counts
+const bought = state.npcs.flatMap((n) => n.memories.filter((mm) => mm.text.startsWith("Bought a fresh loaf")));
 const sold = [mara, tomas].flatMap((n) => n.memories.filter((mm) => mm.text.startsWith("Sold a fresh loaf")));
-if (bought.length < DAYS) fail(`Edith should buy bread daily: ${bought.length} purchases over ${DAYS} days`);
+const edithBought = edith.memories.filter((mm) => mm.text.startsWith("Bought a fresh loaf"));
+if (edithBought.length < DAYS) fail(`Edith should buy bread daily: ${edithBought.length} purchases over ${DAYS} days`);
 if (sold.length !== bought.length) fail(`sales (${sold.length}) should mirror purchases (${bought.length})`);
+
+// ---- Crime & law chain (Phase 5) — fully deterministic, no LLM ------------
+if (state.crimeLog.length < 1) fail("no crimes over the run — the market should tempt somebody");
+const c0 = state.crimeLog[0];
+if (c0) {
+  const culprit = state.npcs.find((n) => n.id === c0.culprit);
+  const victim = state.npcs.find((n) => n.id === c0.victim);
+  if (!culprit?.gang) fail("first culprit should be a gang member");
+  if (c0.day !== 1) fail(`first theft should happen day 1, got day ${c0.day}`);
+  if (c0.reportedDay !== 1) fail(`first theft should be reported day 1 (witness meets Bram on his rounds), got ${c0.reportedDay}`);
+  if (c0.arrestDay === null || c0.arrestDay > 2)
+    fail(`first culprit should be caught within a day of the report, got ${c0.arrestDay}`);
+  if (DAYS >= 3 && c0.releaseDay !== c0.arrestDay + 1)
+    fail(`culprit should serve exactly one day: arrested ${c0.arrestDay}, released ${c0.releaseDay}`);
+  // memories on every side of the event
+  if (!victim.memories.some((mm) => mm.text.includes("coin purse is gone")))
+    fail("victim never noticed the theft");
+  if (!c0.witnesses.every((wid) => state.npcs.find((n) => n.id === wid)
+        .memories.some((mm) => mm.text.startsWith("Saw ") && mm.importance === 9)))
+    fail("witnesses missing their sighting memory");
+  if (!bram.memories.some((mm) => mm.text.includes("reported the market theft")))
+    fail("Bram never received the report");
+  if (!bram.memories.some((mm) => mm.text.startsWith("Arrested ")))
+    fail("Bram has no arrest memory");
+  if (!culprit.memories.some((mm) => mm.text.includes("clapped me in the station cell")))
+    fail("culprit has no jail memory");
+  if (DAYS >= 3 && !culprit.memories.some((mm) => mm.text.startsWith("Out of the cell")))
+    fail("culprit has no release memory");
+}
+// Hierarchy actually reshuffles: an arrest drops your cred below everyone,
+// so after the first arrest the old order can't hold.
+if (DAYS >= 3) {
+  const shakeups = [silas, ren, pip].flatMap((n) =>
+    n.memories.filter((mm) => mm.text.startsWith("Crew shake-up")));
+  if (!shakeups.length) fail("no crew shake-up memories after an arrest");
+  const cSilas = state.crimeLog.find((c) => c.culprit === "npc_silas");
+  if (cSilas && cSilas.arrestDay !== null && silas.gangRank === "leader" && !silas.jailedUntil)
+    fail("Silas was arrested but still leads the crew — hierarchy never shifted");
+  const freeRanks = [silas, ren, pip].filter((n) => !n.jailedUntil).map((n) => n.gangRank);
+  if (!freeRanks.includes("leader")) fail("nobody leads the crew");
+}
 
 // NPCs notice each other (colleagues share the bakery)
 if (!mara.memories.some((mm) => mm.text.startsWith("Noticed Tomas")))
