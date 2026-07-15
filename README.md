@@ -56,16 +56,39 @@ Controls: **WASD / arrows** move · **E** talk · **M** memory stream · **T** t
 Open the ⚙ settings panel to add keys. Both live only in your browser's
 localStorage — never in the repo.
 
-- **Anthropic key** — enables the Fable 5 autonomy layer (`claude-fable-5`,
-  with a server-side fallback to `claude-opus-4-8` on safety-classifier false
-  positives): every NPC plans their own day each in-game morning (1 call/NPC/
-  day, staggered), NPCs who meet strike up their own conversations (1 call per
-  line, max 4 lines, per-pair cooldown), you can talk to anyone in free text
-  (1 call/turn), and high-importance events — overheard gossip, a theft report
-  — trigger an escalated re-plan (cooldown-limited). Without it: fallback
-  rhythms + canned dialogue, no NPC-to-NPC chatter.
-- **OpenAI key** — enables memory embeddings (`text-embedding-3-small`).
-  Without it, retrieval scores on recency + importance.
+- **Anthropic key** — the premium voice: `claude-fable-5` with a server-side
+  fallback to `claude-opus-4-8` on safety-classifier false positives.
+- **OpenAI key** — memory embeddings (`text-embedding-3-small`), **and** it can
+  power dialogue/planning too (`gpt-4o-mini`) — pick the provider in the
+  settings dropdown (Auto uses Fable 5 when its key exists, else OpenAI).
+
+Whichever provider is active drives the same autonomy layer: every NPC plans
+their own day each in-game morning (1 call/NPC/day, staggered), NPCs who meet
+strike up their own conversations (1 call per line, max 4 lines, per-pair
+cooldown), you can talk to anyone in free text (1 call/turn), and
+high-importance events trigger escalated re-plans. Without any key: fallback
+rhythms + canned dialogue, no NPC-to-NPC chatter.
+
+### Conversations change the world (no scripts)
+
+Every dialogue turn — yours or NPC-to-NPC — returns `{line, effects}`. The
+model decides *what happens*; a small interpreter is only the physics. The
+effect vocabulary: give/take items, set roles (get hired as the constable's
+deputy — for real), join or leave factions (police / the Mudlarks), shift
+opinions, rewrite long-term goals, plant memories, trigger re-plans. A player
+sworn into the police mechanically suppresses street crime nearby; an NPC who
+quits the gang mid-conversation reshuffles the hierarchy on the spot. Invalid
+or over-reaching effects are dropped silently — the sim never breaks on a
+malformed response.
+
+### Physical items
+
+Items exist in the world: loaves stack on the bakery counter (restocked by
+real oven batches, consumed by purchases), goods sit on market stalls, and
+everyone visibly holds their latest possession. Walk up and press **E** to
+pick things up — though grabbing off the counter under staff eyes is
+remembered, and what that *means* is up to the AI. Items move between people
+through dialogue effects, land in inventories, and show up in memories.
 
 Game state (memories, plan, clock) auto-saves to localStorage; "Reset save
 data" in settings wipes it.
@@ -131,9 +154,16 @@ calls (never per-tick), `fable5` still zero (instrumented via
       cell + boat-shed hideout; deterministic crime chain (theft → witnesses → report →
       wanted → arrest → one-day sentence → rank reshuffle → lie-low period) that the
       AI planning/conversation layer reacts to.
-- [ ] **6a. Reflection** — reflection cadence (insights compound into opinions),
+- [x] **6. Open-ended agency** — dialogue effects engine (`{line, effects}` from every
+      turn): item transfers, role changes, faction joins/leaves, opinion shifts, goal
+      rewrites, planted memories, re-plan triggers — all model-decided, interpreter-
+      validated. Physical world items (counter loaves restocked by oven batches,
+      stall goods, pickups with E, held-item rendering), player identity (role,
+      faction, inventory — a deputized player suppresses street crime), OpenAI
+      (`gpt-4o-mini`) as a selectable voice/planning provider alongside Fable 5.
+- [ ] **7a. Reflection** — reflection cadence (insights compound into opinions),
       relationship summaries that evolve from what actually happens.
-- [ ] **6b. World fill** — remaining buildings, items, shop hours, pathfinding polish,
+- [ ] **7b. World fill** — remaining buildings, items, shop hours, pathfinding polish,
       more cast and places.
 - [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
 

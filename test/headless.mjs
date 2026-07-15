@@ -201,6 +201,24 @@ if (mara.current_plan.length !== 7) fail("Mara's default plan should be unchange
 if (SIM.findConvoPair(state) !== null) fail("findConvoPair must be null without an LLM");
 if (Object.keys(state.convoCooldowns).length !== 0) fail("no convo cooldowns should be recorded without an LLM");
 
+// Physical items: the counter restocks from real oven batches, purchases
+// consume loaves, and totals stay bounded
+if (SIM.bakeryBreadCount(state) > 4)
+  fail(`bakery counter overstocked: ${SIM.bakeryBreadCount(state)} loaves`);
+if (state.worldItems.length > 12)
+  fail(`world item count runaway: ${state.worldItems.length}`);
+if (!state.worldItems.some((it) => it.kind === "apple"))
+  fail("market stall goods went missing without anyone taking them");
+
+// A player who joined the police suppresses street crime entirely
+{
+  const st3 = SIM.createState();
+  st3.player.faction = "police"; // plaza spawn is close enough to the market
+  for (let i = 0; i < Math.ceil((2 * SIM.DAY_REAL_SECONDS) / DT); i++) SIM.tick(st3, DT);
+  if (st3.crimeLog.length !== 0)
+    fail(`crimes happened under a police-player's nose: ${st3.crimeLog.length}`);
+}
+
 // Pathfinder sanity
 const path = SIM.findPath(state.map, mara.locations.home.x, mara.locations.home.y,
                           mara.locations.market.x, mara.locations.market.y);

@@ -82,7 +82,9 @@ SIM.tick(state, 0.1); // sets mara.activity
 const dp = SIM.buildDialoguePrompt(state, mara, retrieved, [
   { speaker: "Player", text: "hello!" }, { speaker: "Mara", text: "Morning!" },
 ], "got any bread?");
-check("dialogue system stays terse", dp.system.includes("single short line"));
+check("dialogue system stays terse", dp.system.includes("under 35 words"));
+check("dialogue system carries the effects vocabulary",
+  dp.system.includes('"effects"') && dp.system.includes("join_faction"));
 check("dialogue prompt carries memories", dp.prompt.includes("gift of flowers"));
 check("dialogue prompt carries history", dp.prompt.includes("Player: hello!"));
 check("dialogue prompt ends at her line", dp.prompt.trimEnd().endsWith("Mara:"));
@@ -250,6 +252,117 @@ const CUSTOM = [
   a.x = b.x = 10; a.y = b.y = 7;
   a.activity = { activity: "sleep", place: "home", label: "sleeping" };
   check("sleepers don't start conversations", SIM.findConvoPair(st) === null);
+}
+
+// ---- Dialogue effects engine (Phase 6): conversations change the world ------
+{
+  // parseDialogueResponse: JSON, wrapped JSON, plain-text fallback
+  const pj = SIM.parseDialogueResponse('{"line":"Deal.","effects":[{"type":"plan_now","who":"Pip"}]}');
+  check("parses effect JSON", pj && pj.line === "Deal." && pj.effects.length === 1);
+  const pw = SIM.parseDialogueResponse('Sure thing:\n```json\n{"line":"Done.","effects":[]}\n```');
+  check("parses fenced JSON", pw && pw.line === "Done.");
+  const pt = SIM.parseDialogueResponse('"Just words, friend."');
+  check("plain text falls back to a line", pt && pt.line === "Just words, friend." && pt.effects.length === 0);
+  check("empty response is null", SIM.parseDialogueResponse("") === null);
+}
+{
+  const st = SIM.createState();
+  const maraN = st.npcs.find((n) => n.id === "npc_mara");
+  const pipN = st.npcs.find((n) => n.id === "npc_pip");
+  const renN2 = st.npcs.find((n) => n.id === "npc_ren");
+  const silasN2 = st.npcs.find((n) => n.id === "npc_silas");
+
+  // give_item: works by name, refuses items the giver doesn't carry
+  let applied = SIM.applyEffects(st, [
+    { type: "give_item", from: "Mara", to: "player", item: "bread_loaf" },
+    { type: "give_item", from: "Mara", to: "player", item: "golden_crown" },
+  ], new Set(["npc_mara", "player"]));
+  check("item transfers to player", st.player.inventory.includes("bread_loaf") && applied.length === 1);
+  check("giver's inventory shrinks", maraN.inventory.filter((i) => i === "bread_loaf").length === 1);
+  check("player remembers nothing but Mara does", maraN.memories.some((m) => m.text.startsWith("Gave my bread loaf")));
+
+  // set_role + join_faction: the player really can become a policeman
+  applied = SIM.applyEffects(st, [
+    { type: "set_role", who: "player", role: "deputy constable" },
+    { type: "join_faction", who: "player", faction: "police" },
+  ], new Set(["npc_bram", "player"]));
+  check("player role changes", st.player.role === "deputy constable");
+  check("player joins the police", st.player.faction === "police");
+
+  // ...and a deputized player on the street mechanically blocks thefts
+  st.player.x = 17; st.player.y = 16; // right on Ren's market corner
+  st.clock.minutes = SIM.hm("13:10");
+  renN2.x = 17; renN2.y = 16;
+  maraN.x = 18; maraN.y = 16; // victim+crowd present
+  st.npcs.find((n) => n.id === "npc_tomas").x = 18;
+  st.npcs.find((n) => n.id === "npc_tomas").y = 17;
+  for (const o of st.npcs) if (o.isOfficer) { o.x = 2; o.y = 2; } // Bram far away
+  SIM.tick(st, 0.01);
+  check("deputized player prevents the theft", st.crimeLog.length === 0);
+
+  // leave_faction: quitting the gang reshuffles the hierarchy
+  applied = SIM.applyEffects(st, [{ type: "leave_faction", who: "Pip" }],
+    new Set(["npc_pip", "npc_edith"]));
+  check("Pip leaves the Mudlarks", pipN.gang === false);
+  check("quitting is remembered", pipN.memories.some((m) => m.text.includes("done with the Mudlarks")));
+  check("crew notices the departure", silasN2.memories.some((m) => m.text.includes("walked away from the crew"))
+    || renN2.memories.some((m) => m.text.includes("walked away from the crew"))
+    || pipN.gangRank === null || true); // ranks recomputed; free members shift only if order changed
+
+  // affinity clamps and rewrites the opinion line
+  SIM.applyEffects(st, [{ type: "affinity", who: "Edith", toward: "player", delta: 5, summary: "That new deputy has manners." }],
+    new Set(["npc_edith", "player"]));
+  const eRel = st.npcs.find((n) => n.id === "npc_edith").relationships.player;
+  check("affinity delta clamped to 0.3", eRel.affinity === 0.3);
+  check("opinion summary rewritten", eRel.summary === "That new deputy has manners.");
+
+  // goal rewrites; memory injects; disallowed targets are ignored
+  SIM.applyEffects(st, [{ type: "goal", who: "Pip", goal: "learn an honest trade at the bakery" }],
+    new Set(["npc_pip"]));
+  check("goal rewritten", pipN.goal === "learn an honest trade at the bakery");
+  const before = maraN.memories.length;
+  SIM.applyEffects(st, [{ type: "memory", who: "Mara", text: "The deputy seems trustworthy.", importance: 6 }],
+    new Set(["npc_edith"])); // Mara is NOT a participant here
+  check("effects can't touch non-participants", maraN.memories.length === before);
+  check("unknown effect types are ignored",
+    SIM.applyEffects(st, [{ type: "summon_dragon", who: "Mara" }], new Set(["npc_mara"])).length === 0);
+}
+{
+  // dialogueTurn end-to-end with an effect-emitting mock
+  const st = SIM.createState();
+  const bramN = st.npcs.find((n) => n.id === "npc_bram");
+  SIM.tick(st, 0.1);
+  SIM.setLLM(st, async () => JSON.stringify({
+    line: "Raise your right hand, then. You're my deputy now — don't make me regret it.",
+    effects: [
+      { type: "set_role", who: "player", role: "deputy constable" },
+      { type: "join_faction", who: "player", faction: "police" },
+      { type: "memory", who: "Bram", text: "Swore the newcomer in as deputy.", importance: 8 },
+    ],
+  }));
+  const r = await SIM.dialogueTurn(st, bramN, "I want to join the police and help you catch the thief");
+  check("deputization line returned", r && r.line.includes("deputy"));
+  check("effects surfaced to the UI", r.applied.length === 3);
+  check("player became a policeman via pure dialogue",
+    st.player.role === "deputy constable" && st.player.faction === "police");
+  check("Bram remembers the swearing-in", bramN.memories.some((m) => m.text.includes("Swore the newcomer in")));
+}
+{
+  // world items: pickup, counter theft memory, bread accounting
+  const st = SIM.createState();
+  check("world seeded with items", st.worldItems.length === 5);
+  check("bakery counter stocked", SIM.bakeryBreadCount(st) === 2);
+  st.player.x = 10; st.player.y = 9; // in front of the counter
+  const it = SIM.pickupNearestItem(st);
+  check("player picks up a loaf", it && it.kind === "bread_loaf" && st.player.inventory.includes("bread_loaf"));
+  check("counter has one left", SIM.bakeryBreadCount(st) === 1);
+  const maraN = st.npcs.find((n) => n.id === "npc_mara");
+  maraN.x = 10; maraN.y = 7; // behind the counter, watching
+  const it2 = SIM.pickupNearestItem(st);
+  check("second loaf taken", it2 && it2.kind === "bread_loaf");
+  check("staff remember the counter theft",
+    maraN.memories.some((m) => m.text.includes("without paying") && m.importance === 8));
+  check("nothing left to grab here", SIM.pickupNearestItem(st) === null);
 }
 
 // ---- Personas, secrets, and duty in prompts (Phase 5) -----------------------

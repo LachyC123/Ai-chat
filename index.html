@@ -57,6 +57,11 @@
 <div class="hud" id="clock"></div>
 <div class="hud" id="hint">WASD / arrows — move &nbsp;·&nbsp; E — talk &nbsp;·&nbsp; M — memories &nbsp;·&nbsp; T — time ×10</div>
 <div class="hud" id="prompt"></div>
+<div class="hud" id="playerchip" style="bottom:10px; left:12px; background:rgba(20,16,38,.72);
+     padding:6px 12px; border-radius:8px; font-size:12px"></div>
+<div id="toasts" style="position:fixed; top:52px; left:50%; transform:translateX(-50%);
+     display:flex; flex-direction:column; gap:6px; align-items:center; pointer-events:none;
+     font-family:ui-monospace,Menlo,Consolas,monospace; z-index:20"></div>
 <div id="dialogue">
   <div class="who"></div><div class="line"></div>
   <div id="dlgcontrols" style="display:none; margin-top:8px">
@@ -78,10 +83,17 @@
 
 <div id="settings" class="panel">
   <h3>Settings</h3>
-  <label>Anthropic API key (Fable 5 — planning &amp; dialogue)</label>
+  <label>Anthropic API key (Fable 5)</label>
   <input id="anthropickeyinput" type="password" placeholder="sk-ant-..." autocomplete="off">
-  <label>OpenAI API key (memory embeddings only)</label>
+  <label>OpenAI API key (embeddings — and dialogue/planning if selected below)</label>
   <input id="keyinput" type="password" placeholder="sk-..." autocomplete="off">
+  <label>Voice &amp; planning model</label>
+  <select id="llmprovider" style="width:100%; box-sizing:border-box; background:#14102a; color:#f2ead8;
+          border:1px solid #7a6aa8; border-radius:6px; padding:4px 8px; font:inherit; margin:4px 0 8px">
+    <option value="auto">Auto (Fable 5 if set, else OpenAI)</option>
+    <option value="anthropic">Anthropic Fable 5</option>
+    <option value="openai">OpenAI gpt-4o-mini</option>
+  </select>
   <div>
     <button id="savekey">Save keys</button>
     <button id="clearkey">Clear keys</button>
@@ -443,6 +455,7 @@ const SIM = (() => {
       o.workplace === BUILDINGS[0].id && Math.hypot(o.x - npc.x, o.y - npc.y) <= 3);
     if (!worker) return;
     npc.lastPurchaseDay = state.clock.day;
+    takeWorldItem(state, 10, 8, 3); // a loaf leaves the counter if one's there
     npc.inventory.push("bread_loaf");
     addMemory(state, npc, "observation", `Bought a fresh loaf from ${worker.name} at the bakery.`);
     addMemory(state, worker, "observation", `Sold a fresh loaf to ${npc.name}.`);
@@ -522,7 +535,7 @@ const SIM = (() => {
       wants: "the bakery bustling and the town's gossip flowing through her shop",
       goal: "make the bakery the beating heart of the town",
       home: "building_bakery_house", workplace: "building_bakery", stationOffset: 0,
-      anchors: MARA_ANCHORS, inventory: ["bread_loaf_x4", "spare_key"],
+      anchors: MARA_ANCHORS, inventory: ["bread_loaf", "bread_loaf", "spare_key"],
       relationships: {
         npc_tomas: { affinity: 0.6, summary: "Trusts him since he fixed her oven; a good hire." },
         npc_edith: { affinity: 0.4, summary: "A dependable regular with strong opinions about rye." },
@@ -823,17 +836,168 @@ ${JSON.stringify(npc.defaultAnchors)}`;
     return mem;
   }
 
+  // ---- Dialogue effects (Phase 6): conversations change the world --------
+  // The model decides WHAT happens; this interpreter is only the physics.
+  // Anything the vocabulary covers can happen — hire the player as deputy,
+  // quit the gang mid-chat, hand over the stolen purse, swear a grudge.
+  const EFFECTS_SPEC =
+`Respond with ONLY JSON, no code fences: {"line":"<your spoken line>","effects":[...]}
+"effects" changes the world. Include an effect ONLY when this exchange genuinely causes it (a gift handed over, an oath, a hiring or firing, a betrayal); most turns: "effects":[]
+Available effects (refer to people by name, or "player"):
+{"type":"give_item","from":"...","to":"...","item":"..."} — item must be something the giver carries
+{"type":"set_role","who":"...","role":"..."} — hirings, firings, promotions (e.g. the player agreeing to become the constable's deputy)
+{"type":"join_faction","who":"...","faction":"police"} — or "mudlarks"
+{"type":"leave_faction","who":"..."}
+{"type":"affinity","who":"...","toward":"...","delta":0.2,"summary":"<new one-line opinion>"} — delta between -0.3 and 0.3
+{"type":"goal","who":"...","goal":"<new long-term goal>"}
+{"type":"memory","who":"...","text":"<something worth remembering>","importance":5}
+{"type":"plan_now","who":"...","reason":"<why they should rethink today's plan>"}`;
+
+  function resolveActor(state, ref) {
+    if (typeof ref !== "string") return null;
+    const r = ref.trim().toLowerCase();
+    if (r === "player" || r === "the player") return { player: true };
+    const npc = state.npcs.find((n) => n.id === r || n.name.toLowerCase() === r);
+    return npc ? { npc } : null;
+  }
+  const actorId = (a) => (a.player ? "player" : a.npc.id);
+  const actorName = (a) => (a.player ? "the player" : a.npc.name);
+  const actorInv = (state, a) => (a.player ? state.player.inventory : a.npc.inventory);
+
+  function applyEffects(state, effects, allowedIds) {
+    const applied = [];
+    if (!Array.isArray(effects)) return applied;
+    for (const e of effects.slice(0, 4)) {
+      try {
+        if (!e || typeof e.type !== "string") continue;
+        const who = resolveActor(state, e.who ?? e.from);
+        if (!who || !allowedIds.has(actorId(who))) continue;
+        switch (e.type) {
+          case "give_item": {
+            const to = resolveActor(state, e.to);
+            if (!to || !allowedIds.has(actorId(to)) || typeof e.item !== "string") break;
+            const item = e.item.trim().toLowerCase().replace(/\s+/g, "_").slice(0, 30);
+            const inv = actorInv(state, who);
+            const idx = inv.indexOf(item);
+            if (idx < 0) break; // can't give what you don't carry
+            inv.splice(idx, 1);
+            actorInv(state, to).push(item);
+            if (to.npc) addMemory(state, to.npc, "observation",
+              `${actorName(who)} gave me ${item.replace(/_/g, " ")}.`);
+            if (who.npc) addMemory(state, who.npc, "observation",
+              `Gave my ${item.replace(/_/g, " ")} to ${actorName(to)}.`);
+            applied.push(`${item.replace(/_/g, " ")}: ${actorName(who)} → ${actorName(to)}`);
+            break;
+          }
+          case "set_role": {
+            if (typeof e.role !== "string" || !e.role.trim()) break;
+            const role = e.role.trim().slice(0, 48);
+            if (who.player) state.player.role = role; else who.npc.role = role;
+            applied.push(`${actorName(who)} is now: ${role}`);
+            break;
+          }
+          case "join_faction": {
+            if (e.faction !== "police" && e.faction !== "mudlarks") break;
+            if (who.player) { state.player.faction = e.faction; }
+            else if (e.faction === "police") {
+              if (who.npc.gang) { who.npc.gang = false; refreshGangRanks(state, `${who.npc.name} went straight`); }
+              who.npc.isOfficer = true;
+              addMemory(state, who.npc, "reflection", "I joined the police. New life, new rules.", { importance: 9 });
+            } else {
+              who.npc.isOfficer = false;
+              who.npc.gang = true;
+              who.npc.cred = Math.min(0, ...gangMembers(state).map((n) => n.cred)) - 1;
+              addMemory(state, who.npc, "reflection", `I'm running with ${GANG_NAME} now.`, { importance: 9 });
+              refreshGangRanks(state, `${who.npc.name} joined the crew`);
+            }
+            applied.push(`${actorName(who)} joined the ${e.faction === "police" ? "police" : GANG_NAME}`);
+            break;
+          }
+          case "leave_faction": {
+            if (who.player) { state.player.faction = null; applied.push("the player walked away from their faction"); break; }
+            if (who.npc.gang) {
+              who.npc.gang = false;
+              addMemory(state, who.npc, "reflection", `I'm done with ${GANG_NAME}. Out.`, { importance: 9 });
+              refreshGangRanks(state, `${who.npc.name} walked away from the crew`);
+              applied.push(`${who.npc.name} left ${GANG_NAME}`);
+            } else if (who.npc.isOfficer) {
+              who.npc.isOfficer = false;
+              addMemory(state, who.npc, "reflection", "I turned in the badge.", { importance: 9 });
+              applied.push(`${who.npc.name} turned in the badge`);
+            }
+            break;
+          }
+          case "affinity": {
+            if (!who.npc) break;
+            const toward = resolveActor(state, e.toward);
+            if (!toward) break;
+            const key = actorId(toward);
+            const rel = who.npc.relationships[key] || (who.npc.relationships[key] = { affinity: 0, summary: "" });
+            const delta = Math.max(-0.3, Math.min(0.3, Number(e.delta) || 0));
+            rel.affinity = Math.max(-1, Math.min(1, +(rel.affinity + delta).toFixed(2)));
+            if (typeof e.summary === "string" && e.summary.trim()) rel.summary = e.summary.trim().slice(0, 90);
+            applied.push(`${who.npc.name}'s opinion of ${actorName(toward)} shifted ${delta >= 0 ? "+" : ""}${delta}`);
+            break;
+          }
+          case "goal": {
+            if (!who.npc || typeof e.goal !== "string" || !e.goal.trim()) break;
+            who.npc.goal = e.goal.trim().slice(0, 90);
+            applied.push(`${who.npc.name} has a new goal: ${who.npc.goal}`);
+            break;
+          }
+          case "memory": {
+            if (!who.npc || typeof e.text !== "string" || !e.text.trim()) break;
+            addMemory(state, who.npc, "observation", e.text.trim().slice(0, 140),
+              { importance: Math.max(1, Math.min(9, Number(e.importance) || 5)) });
+            applied.push(`${who.npc.name} will remember that`);
+            break;
+          }
+          case "plan_now": {
+            if (!who.npc) break;
+            who.npc.needsPlan = true;
+            applied.push(`${who.npc.name} is rethinking the day`);
+            break;
+          }
+        }
+      } catch { /* a malformed effect never breaks the sim */ }
+    }
+    return applied;
+  }
+
+  function parseDialogueResponse(raw) {
+    if (!raw) return null;
+    const m = String(raw).match(/\{[\s\S]*\}/);
+    if (m) {
+      try {
+        const o = JSON.parse(m[0]);
+        if (typeof o.line === "string" && o.line.trim())
+          return { line: o.line.trim().slice(0, 300), effects: Array.isArray(o.effects) ? o.effects : [] };
+      } catch { /* fall through to plain text */ }
+    }
+    const line = String(raw).trim().replace(/^["']+|["']+$/g, "").split("\n")[0].slice(0, 300);
+    return line ? { line, effects: [] } : null;
+  }
+
+  function playerSheet(state) {
+    const p = state.player;
+    return `The player is a ${p.role}${p.faction ? `, sworn to the ${p.faction === "police" ? "police" : GANG_NAME}` : ""}${p.inventory.length ? `, carrying ${p.inventory.map((i) => i.replace(/_/g, " ")).join(", ")}` : ""}.`;
+  }
+
   function buildDialoguePrompt(state, npc, retrieved, turns, playerText) {
     const system =
 `You are ${npc.name}, a ${npc.role} in a small pixel-art town.
 ${personaLines(npc)}
-Stay in character. Reply with a single short line of spoken dialogue (under 35 words). No quotation marks, no narration, no stage directions.`;
+Stay in character; your line is spoken dialogue (under 35 words), no narration.
+Nothing is scripted here: if the conversation earns it, real things can happen — deals, gifts, hirings, betrayals.
+${EFFECTS_SPEC}`;
     const mems = retrieved.map((r) => `- (${r.memory.timestamp}) ${r.memory.text}`).join("\n")
       || "- (nothing memorable yet)";
     const rel = npc.relationships.player;
     const convo = turns.slice(-6).map((t) => `${t.speaker}: ${t.text}`).join("\n");
     const prompt =
 `Time: day ${state.clock.day}, ${fmtClock(state.clock.minutes)} — you are ${npc.stationLabel || npc.activity.label}.
+${playerSheet(state)}
+You carry: ${npc.inventory.map((i) => i.replace(/_/g, " ")).join(", ") || "nothing"}.
 Your relevant memories:
 ${mems}
 Relationship with the player: affinity ${rel.affinity} — ${rel.summary}
@@ -850,14 +1014,15 @@ ${npc.name}:`;
     try { queryVec = await embedText(state, playerText); } catch {}
     const retrieved = retrieveMemories(state, npc, { queryVec, N: 8 });
     const { system, prompt } = buildDialoguePrompt(state, npc, retrieved, npc.conversation, playerText);
-    const raw = await callFable5(state, { system, prompt, maxTokens: 120 });
-    const line = (raw || "").trim().replace(/^["']+|["']+$/g, "").split("\n")[0].slice(0, 300);
-    if (!line) return null;
-    npc.conversation.push({ speaker: "Player", text: playerText }, { speaker: npc.name, text: line });
+    const raw = await callFable5(state, { system, prompt, maxTokens: 250 });
+    const parsed = parseDialogueResponse(raw);
+    if (!parsed) return null;
+    const applied = applyEffects(state, parsed.effects, new Set([npc.id, "player"]));
+    npc.conversation.push({ speaker: "Player", text: playerText }, { speaker: npc.name, text: parsed.line });
     // The exchange itself becomes a memory; its heuristic importance can
     // trip the interruption threshold (e.g. the player reports a theft).
-    addMemory(state, npc, "dialogue", `The player said: "${playerText}" I replied: "${line}"`);
-    return { line, retrieved };
+    addMemory(state, npc, "dialogue", `The player said: "${playerText}" I replied: "${parsed.line}"`);
+    return { line: parsed.line, retrieved, applied };
   }
 
   // ---- NPC-to-NPC conversations (Phase 4) --------------------------------
@@ -896,19 +1061,25 @@ ${npc.name}:`;
     const system =
 `You are ${speaker.name}, a ${speaker.role} in a small pixel-art town.
 ${personaLines(speaker)}
-Stay in character. Reply with a single short line of spoken dialogue (under 30 words). No quotation marks, no narration.`;
+Stay in character; your line is spoken dialogue (under 30 words), no narration.
+Nothing is scripted: if the conversation earns it, real things can happen between you two.
+${EFFECTS_SPEC}`;
     const mems = retrieved.map((r) => `- (${r.memory.timestamp}) ${r.memory.text}`).join("\n")
       || "- (nothing memorable yet)";
     const convo = turns.map((t) => `${t.speaker}: ${t.text}`).join("\n");
     const prompt =
 `Time: day ${state.clock.day}, ${fmtClock(state.clock.minutes)} — you are ${speaker.stationLabel || speaker.activity.label}.
 You're chatting with ${listener.name}, the ${listener.role}.
+You carry: ${speaker.inventory.map((i) => i.replace(/_/g, " ")).join(", ") || "nothing"}.
 Your relevant memories:
 ${mems}
 Your relationship with ${listener.name}: affinity ${rel.affinity} — ${rel.summary}
 ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open naturally.\n`}${speaker.name}:`;
-    const raw = await callFable5(state, { system, prompt, maxTokens: 100 });
-    return (raw || "").trim().replace(/^["']+|["']+$/g, "").split("\n")[0].slice(0, 240) || null;
+    const raw = await callFable5(state, { system, prompt, maxTokens: 220 });
+    const parsed = parseDialogueResponse(raw);
+    if (!parsed) return null;
+    const applied = applyEffects(state, parsed.effects, new Set([speaker.id, listener.id]));
+    return { line: parsed.line.slice(0, 240), applied };
   }
 
   async function runNpcConversation(state, a, b, { maxTurns = NPC_CONVO_MAX_TURNS, onLine = null } = {}) {
@@ -920,11 +1091,11 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     try {
       let speaker = a, listener = b;
       for (let t = 0; t < maxTurns; t++) {
-        const line = await npcLine(state, speaker, listener, turns);
-        if (!line) break;
-        turns.push({ speaker: speaker.name, text: line });
-        state.activeConvo.lines.push({ id: speaker.id, name: speaker.name, text: line });
-        if (onLine) onLine(speaker, line);
+        const result = await npcLine(state, speaker, listener, turns);
+        if (!result) break;
+        turns.push({ speaker: speaker.name, text: result.line });
+        state.activeConvo.lines.push({ id: speaker.id, name: speaker.name, text: result.line });
+        if (onLine) onLine(speaker, result.line, result.applied);
         [speaker, listener] = [listener, speaker];
       }
       if (turns.length) {
@@ -982,6 +1153,9 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     if (min < hm("09:00") || min > hm("18:00")) return;
     if (Math.hypot(npc.x - npc.locations.market.x, npc.y - npc.locations.market.y) > 1) return;
     if (state.npcs.some((o) => o.isOfficer && Math.hypot(o.x - npc.x, o.y - npc.y) <= OFFICER_BLOCK_RADIUS)) return;
+    // a player who has joined the police counts as law on the street
+    if (state.player.faction === "police" &&
+        Math.hypot(state.player.x - npc.x, state.player.y - npc.y) <= OFFICER_BLOCK_RADIUS) return;
     // needs a mark AND crowd cover: at least two civilians in reach
     const civs = state.npcs
       .filter((o) => !o.gang && !o.isOfficer && Math.hypot(o.x - npc.x, o.y - npc.y) <= PERCEPTION_RADIUS)
@@ -1145,9 +1319,13 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       npc.stationLabel = ws.label;
       if (npc.station !== name) {
         npc.station = name;
-        // Only log the oven session once they're actually in the bakery
-        if (name === "oven" && Math.hypot(npc.x - target.x, npc.y - target.y) < 4)
+        // Only log the oven session once they're actually in the bakery;
+        // each batch restocks the counter with real loaves
+        if (name === "oven" && Math.hypot(npc.x - target.x, npc.y - target.y) < 4) {
           addMemory(state, npc, "observation", "Put a fresh batch of loaves in the oven.");
+          while (bakeryBreadCount(state) < 4)
+            spawnItem(state, "bread_loaf", bakeryBreadCount(state) % 2 ? 11 : 9, 8);
+        }
       }
     } else {
       npc.station = null; npc.stationLabel = null;
@@ -1193,8 +1371,11 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       buildings: BUILDINGS,
       clock: { day: 1, minutes: hm("06:50") },
       timeScale: 1,
-      player: { x: 19, y: 20, dir: "down", moving: false, speed: 4.2 },
+      player: { x: 19, y: 20, dir: "down", moving: false, speed: 4.2,
+                role: "newcomer", faction: null, inventory: [] },
       npcs: NPC_DEFS.map(createNPC),
+      // Physical items lying in the world (Phase 6)
+      worldItems: [], itemCounter: 1,
       // NPC-to-NPC conversation bookkeeping (Phase 4)
       activeConvo: null, convoCooldowns: {},
       // Crime & law (Phase 5)
@@ -1209,7 +1390,46 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       modelCalls: { fable5: 0, embeddings: 0 },
     };
     refreshGangRanks(state, "day one"); // silent initial ranking (old rank is null)
+    // Seed the world with physical goods
+    spawnItem(state, "bread_loaf", 9, 8); spawnItem(state, "bread_loaf", 11, 8); // bakery counter
+    spawnItem(state, "apple", 16, 16); spawnItem(state, "cloth", 22, 16);        // market stalls
+    spawnItem(state, "flowers", 13, 22);                                          // by the park path
     return state;
+  }
+
+  // ---- Physical items (Phase 6) -----------------------------------------
+  function spawnItem(state, kind, x, y) {
+    const it = { id: `item_${state.itemCounter++}`, kind, x, y };
+    state.worldItems.push(it);
+    return it;
+  }
+  function takeWorldItem(state, x, y, radius = 1.6) {
+    let best = -1, bestD = radius;
+    state.worldItems.forEach((it, i) => {
+      const d = Math.hypot(it.x - x, it.y - y);
+      if (d <= bestD) { best = i; bestD = d; }
+    });
+    if (best < 0) return null;
+    return state.worldItems.splice(best, 1)[0];
+  }
+  // Player pickup — grabbing off the bakery counter under staff eyes is
+  // remembered (no scripted punishment; the AI decides what it means).
+  function pickupNearestItem(state) {
+    const p = state.player;
+    const it = takeWorldItem(state, p.x, p.y);
+    if (!it) return null;
+    p.inventory.push(it.kind);
+    if (insideBuilding(BUILDINGS[0], it.x, it.y))
+      for (const n of state.npcs)
+        if (n.workplace === BUILDINGS[0].id && Math.hypot(n.x - it.x, n.y - it.y) <= 5)
+          addMemory(state, n, "observation",
+            `The player took ${it.kind.replace(/_/g, " ")} straight off the counter without paying!`,
+            { importance: 8 });
+    return it;
+  }
+  function bakeryBreadCount(state) {
+    return state.worldItems.filter((it) =>
+      it.kind === "bread_loaf" && insideBuilding(BUILDINGS[0], it.x, it.y)).length;
   }
 
   function tick(state, dtReal) {
@@ -1237,6 +1457,8 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     setLLM, buildPlanningPrompt, validatePlan, generatePlan, takeInterrupt,
     buildDialoguePrompt, dialogueTurn, findConvoPair, runNpcConversation,
     refreshGangRanks, wantedNames, GANG_NAME, STATION,
+    spawnItem, takeWorldItem, pickupNearestItem, bakeryBreadCount,
+    parseDialogueResponse, applyEffects, playerSheet,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -1284,15 +1506,19 @@ if (typeof module !== "undefined") module.exports = SIM;
           planFailures: n.planFailures, inventory: n.inventory,
           cred: n.cred, gangRank: n.gangRank, jailedUntil: n.jailedUntil,
           lastTheftDay: n.lastTheftDay, lastReleaseDay: n.lastReleaseDay,
+          role: n.role, goal: n.goal, gang: n.gang, isOfficer: n.isOfficer,
           memories: n.memories.map((m) =>
             ({ ...m, embedding: m.embedding ? vecEnc(m.embedding) : null })),
         };
       }
       localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 5, clock: state.clock, memCounter: state.memCounter,
-        player: { x: state.player.x, y: state.player.y },
+        v: 6, clock: state.clock, memCounter: state.memCounter,
+        player: { x: state.player.x, y: state.player.y,
+                  role: state.player.role, faction: state.player.faction,
+                  inventory: state.player.inventory },
         convoCooldowns: state.convoCooldowns,
         crimeLog: state.crimeLog, lastCrimeDay: state.lastCrimeDay,
+        worldItems: state.worldItems, itemCounter: state.itemCounter,
         npcs,
       }));
     } catch (e) { console.warn("save failed", e); }
@@ -1302,12 +1528,17 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 5) return; // older saves start fresh
+      if (s.v !== 6) return; // older saves start fresh
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
+      if (s.player.role) state.player.role = s.player.role;
+      if (s.player.faction !== undefined) state.player.faction = s.player.faction;
+      if (s.player.inventory) state.player.inventory = s.player.inventory;
       state.convoCooldowns = s.convoCooldowns || {};
       state.crimeLog = s.crimeLog || [];
       state.lastCrimeDay = s.lastCrimeDay || 0;
+      if (s.worldItems) state.worldItems = s.worldItems;
+      if (s.itemCounter) state.itemCounter = s.itemCounter;
       for (const n of state.npcs) {
         const d = s.npcs[n.id];
         if (!d) continue;
@@ -1324,6 +1555,10 @@ if (typeof module !== "undefined") module.exports = SIM;
         if (d.jailedUntil !== undefined) n.jailedUntil = d.jailedUntil;
         if (d.lastTheftDay) n.lastTheftDay = d.lastTheftDay;
         if (d.lastReleaseDay) n.lastReleaseDay = d.lastReleaseDay;
+        if (d.role) n.role = d.role;
+        if (d.goal) n.goal = d.goal;
+        if (d.gang !== undefined) n.gang = d.gang;
+        if (d.isOfficer !== undefined) n.isOfficer = d.isOfficer;
         n.memories = d.memories.map((m) =>
           ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
         state.embedQueue.push(...n.memories.filter((m) => !m.embedding));
@@ -1393,8 +1628,37 @@ if (typeof module !== "undefined") module.exports = SIM;
       return data.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
     };
   }
-  if (localStorage.getItem(ANTHROPIC_KEY_KEY))
-    SIM.setLLM(state, makeAnthropicLLM(localStorage.getItem(ANTHROPIC_KEY_KEY)));
+  // OpenAI can also power the voice layer (plan §10 open decision): same
+  // injected interface, chat-completions under the hood.
+  function makeOpenAILLM(key) {
+    return async ({ system, prompt, maxTokens }) => {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          max_tokens: maxTokens ?? 300,
+          messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+        }),
+      });
+      if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}`);
+      const data = await res.json();
+      return (data.choices?.[0]?.message?.content || "").trim();
+    };
+  }
+
+  const PROVIDER_KEY = "townsim.llm_provider"; // auto | anthropic | openai
+  function applyLLMProvider() {
+    const pref = localStorage.getItem(PROVIDER_KEY) || "auto";
+    const ak = localStorage.getItem(ANTHROPIC_KEY_KEY);
+    const ok = localStorage.getItem(API_KEY_KEY);
+    let provider = null, name = "none";
+    if ((pref === "anthropic" || pref === "auto") && ak) { provider = makeAnthropicLLM(ak); name = "Fable 5"; }
+    else if ((pref === "openai" || pref === "auto") && ok) { provider = makeOpenAILLM(ok); name = "OpenAI gpt-4o-mini"; }
+    SIM.setLLM(state, provider);
+    state.llmName = provider ? name : null;
+  }
+  applyLLMProvider();
 
   // Planning pump: daily plans each in-game morning + escalated re-plans
   // on high-importance interruptions (plan §3.5-3.6). One NPC per tick so
@@ -1423,8 +1687,9 @@ if (typeof module !== "undefined") module.exports = SIM;
     if (!pair) return;
     try {
       await SIM.runNpcConversation(state, pair[0], pair[1], {
-        onLine: (speaker, line) => {
+        onLine: (speaker, line, applied) => {
           bubbles.set(speaker.id, { text: line, until: performance.now() + 5200 });
+          (applied || []).forEach(toast);
           renderMemPanel();
         },
       });
@@ -1529,6 +1794,30 @@ if (typeof module !== "undefined") module.exports = SIM;
       g.fillRect(x + 4 + eo, y + 3, 1, 1); g.fillRect(x + 7 + eo, y + 3, 1, 1);
     }
   }
+  const ITEM_COLORS = {
+    bread_loaf: "#d9a45a", coin_purse: "#8a6a3a", apple: "#d94f45", cloth: "#5a7ac8",
+    flowers: "#e86a8a", fishing_rod: "#8a97a8", knitting_needles: "#d8d2c0",
+    lockpicks: "#6a7a8a", dice: "#f2ead8", slingshot: "#8f6238", ledger: "#7a5a3a",
+    toolbox: "#a8503a", spare_key: "#e8c266", iron_key: "#9a9aa8",
+  };
+  const itemColor = (kind) => ITEM_COLORS[kind] || "#c9c9c9";
+  function drawItem(g, wx, wy, kind) {
+    const x = Math.round(wx * TILE), y = Math.round(wy * TILE);
+    g.fillStyle = "rgba(0,0,0,.25)"; g.fillRect(x + 5, y + 11, 7, 2);
+    g.fillStyle = itemColor(kind); g.fillRect(x + 5, y + 6, 6, 5);
+    g.fillStyle = "rgba(255,255,255,.35)"; g.fillRect(x + 6, y + 7, 2, 1);
+  }
+
+  function toast(text) {
+    const el = document.createElement("div");
+    el.textContent = `✦ ${text}`;
+    el.style.cssText = "background:rgba(24,19,44,.92); color:#ffe9a8; border:1px solid #7a6aa8;" +
+      "border-radius:999px; padding:5px 14px; font-size:13px; transition:opacity .6s; opacity:1";
+    document.getElementById("toasts").appendChild(el);
+    setTimeout(() => { el.style.opacity = "0"; }, 3600);
+    setTimeout(() => el.remove(), 4300);
+  }
+
   const PAL_PLAYER = { hair: "#c98f3a", tunic: "#3a6ea8", pants: "#43354f" };
   const PALETTES = {
     npc_mara:  { hair: "#4a3226", tunic: "#a8503a", pants: "#5c452c", apron: "#f2ead8" },
@@ -1634,6 +1923,13 @@ if (typeof module !== "undefined") module.exports = SIM;
   document.getElementById("membtn").addEventListener("pointerdown", (e) => { e.stopPropagation(); togglePanel(memPanel); });
   document.getElementById("gearbtn").addEventListener("pointerdown", (e) => { e.stopPropagation(); togglePanel(settingsPanel); });
 
+  const providerSel = document.getElementById("llmprovider");
+  providerSel.value = localStorage.getItem(PROVIDER_KEY) || "auto";
+  providerSel.addEventListener("change", () => {
+    localStorage.setItem(PROVIDER_KEY, providerSel.value);
+    applyLLMProvider();
+    renderMemPanel();
+  });
   document.getElementById("savekey").addEventListener("click", () => {
     const ok = document.getElementById("keyinput").value.trim();
     if (ok) {
@@ -1644,16 +1940,16 @@ if (typeof module !== "undefined") module.exports = SIM;
     const ak = document.getElementById("anthropickeyinput").value.trim();
     if (ak) {
       localStorage.setItem(ANTHROPIC_KEY_KEY, ak);
-      SIM.setLLM(state, makeAnthropicLLM(ak));
       document.getElementById("anthropickeyinput").value = "";
     }
+    applyLLMProvider();
     renderMemPanel();
   });
   document.getElementById("clearkey").addEventListener("click", () => {
     localStorage.removeItem(API_KEY_KEY);
     localStorage.removeItem(ANTHROPIC_KEY_KEY);
     SIM.setEmbedder(state, null);
-    SIM.setLLM(state, null);
+    applyLLMProvider();
   });
   document.getElementById("resetsave").addEventListener("click", () => {
     if (confirm("Wipe the town's save data (memories, clock, positions)?")) {
@@ -1679,7 +1975,7 @@ if (typeof module !== "undefined") module.exports = SIM;
     const status = document.getElementById("embedstatus");
     const totalMems = state.npcs.reduce((s, n) => s + n.memories.length, 0);
     const embedded = state.npcs.reduce((s, n) => s + n.memories.filter((m) => m.embedding).length, 0);
-    status.textContent = `Fable 5: ${state.llm ? "configured" : "not set"} · ` +
+    status.textContent = `voice: ${state.llmName || (state.llm ? "custom" : "not set")} · ` +
       `embeddings: ${state.embedder ? "configured" : "not set"} · ` +
       `memories: ${totalMems} (${embedded} embedded, ${state.embedQueue.length} queued) · ` +
       `API calls: ${state.modelCalls.embeddings} embed, ${state.modelCalls.fable5} fable5`;
@@ -1733,7 +2029,11 @@ if (typeof module !== "undefined") module.exports = SIM;
   function tryTalk() {
     if (dialogueOpen) { if (!llmMode) advanceDialogue(); return; }
     const npc = nearestNpc();
-    if (!npc || npc.activity.activity === "sleep" || npc.talking) return;
+    if (!npc || npc.activity.activity === "sleep" || npc.talking) {
+      const it = SIM.pickupNearestItem(state); // no one to talk to — grab what's at hand
+      if (it) toast(`picked up ${it.kind.replace(/_/g, " ")}`);
+      return;
+    }
     talkTarget = npc;
     llmMode = !!state.llm;
     dialogueOpen = true; npc.talking = true;
@@ -1789,6 +2089,7 @@ if (typeof module !== "undefined") module.exports = SIM;
       if (!dialogueOpen) return; // player walked away mid-call
       if (result) {
         dlg.querySelector(".line").textContent = result.line;
+        (result.applied || []).forEach(toast);
         lastRetrieval = { who: npc.name, query: text, usedEmbedding: !!state.embedder,
                           results: result.retrieved.slice(0, 5) };
         renderMemPanel();
@@ -1854,15 +2155,28 @@ if (typeof module !== "undefined") module.exports = SIM;
     ctx.setTransform(zoom, 0, 0, zoom, -camX * zoom, -camY * zoom);
     ctx.drawImage(mapCanvas, 0, 0);
 
-    // Actors, y-sorted
+    // World items on the ground / counters
+    for (const it of state.worldItems) drawItem(ctx, it.x, it.y, it.kind);
+
+    // Actors, y-sorted; everyone visibly holds their latest item
     const walkFrame = Math.floor(walkTimer * 8) % 2 === 0;
     const npcFrame = Math.floor(now / 140) % 2 === 0;
+    const held = (inv) => inv.length ? inv[inv.length - 1] : null;
+    const drawHeld = (wx, wy, kind) => {
+      if (!kind) return;
+      ctx.fillStyle = itemColor(kind);
+      ctx.fillRect(Math.round(wx * TILE) + 5, Math.round(wy * TILE) - 3, 4, 4);
+    };
     const actors = [
-      { y: p.y, draw: () => drawChar(ctx, p.x, p.y, PAL_PLAYER, p.dir, p.moving && walkFrame, 0) },
+      { y: p.y, draw: () => { drawChar(ctx, p.x, p.y, PAL_PLAYER, p.dir, p.moving && walkFrame, 0);
+          drawHeld(p.x, p.y, held(p.inventory)); } },
       ...state.npcs.map((n) => ({
         y: n.y,
-        draw: () => drawChar(ctx, n.x, n.y, PALETTES[n.id], n.dir, n.moving && npcFrame,
-          n.activity.activity === "sleep" ? 0 : (!n.moving ? Math.sin(now / 400 + n.x) * 0.8 : 0)),
+        draw: () => {
+          drawChar(ctx, n.x, n.y, PALETTES[n.id], n.dir, n.moving && npcFrame,
+            n.activity.activity === "sleep" ? 0 : (!n.moving ? Math.sin(now / 400 + n.x) * 0.8 : 0));
+          drawHeld(n.x, n.y, held(n.inventory));
+        },
       })),
     ].sort((a, b) => a.y - b.y);
     for (const a of actors) a.draw();
@@ -1916,9 +2230,15 @@ if (typeof module !== "undefined") module.exports = SIM;
                           (state.timeScale !== 1 ? `  ×${state.timeScale}` : "");
     const nearby = nearestNpc();
     const canTalk = nearby && nearby.activity.activity !== "sleep" && !nearby.talking && !dialogueOpen;
-    promptEl.style.display = canTalk ? "block" : "none";
+    const nearItem = !canTalk && !dialogueOpen &&
+      state.worldItems.find((it) => Math.hypot(it.x - p.x, it.y - p.y) <= 1.6);
+    promptEl.style.display = canTalk || nearItem ? "block" : "none";
     if (canTalk) promptEl.textContent = `E — talk to ${nearby.name}`;
+    else if (nearItem) promptEl.textContent = `E — pick up ${nearItem.kind.replace(/_/g, " ")}`;
     talkbtn.style.display = canTalk && "ontouchstart" in window ? "flex" : "none";
+    document.getElementById("playerchip").textContent =
+      `You — ${p.role}${p.faction ? ` · ${p.faction === "police" ? "police" : "Mudlarks"}` : ""}` +
+      (p.inventory.length ? ` · ${p.inventory.map((i) => i.replace(/_/g, " ")).join(", ")}` : "");
 
     requestAnimationFrame(frame);
   }
