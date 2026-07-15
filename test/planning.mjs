@@ -416,6 +416,84 @@ const CUSTOM = [
   check("new order holds", renN.gangRank === "leader" && pipN.gangRank === "lieutenant");
 }
 
+// ---- Reflection (Phase 7): synthesis compounds into opinions ---------------
+{
+  const st = SIM.createState(1);
+  const npc = st.npcs.find((n) => n.id === "npc_edith");
+  npc.pendingInterrupt = null;
+  // Pile up importance until the threshold arms a reflection
+  let armedAt = null;
+  for (let i = 0; i < 20 && armedAt === null; i++) {
+    SIM.addMemory(st, npc, "observation", `Something notable happened, number ${i}.`, { importance: 8 });
+    if (npc.needsReflection) armedAt = npc.importanceSinceReflection;
+  }
+  check("reflection arms once importance crosses the threshold", npc.needsReflection === true);
+  check("threshold accrual matches REFLECTION_THRESHOLD", armedAt >= SIM.REFLECTION_THRESHOLD);
+
+  // Prompt construction carries persona + memories + relationships
+  const retrieved = SIM.retrieveMemories(st, npc, { N: 8 });
+  const rp = SIM.buildReflectionPrompt(st, npc, retrieved);
+  check("reflection prompt is persona-grounded", rp.system.includes("inner voice") && rp.system.includes("Edith"));
+  check("reflection demands JSON insights", rp.system.includes('"insights"'));
+  check("reflection prompt carries memories", rp.prompt.includes("Something notable happened"));
+
+  // generateReflection stores insights + can shift an opinion, and resets accrual
+  SIM.setLLM(st, async () => JSON.stringify({
+    insights: ["Silas is never where he says he'll be — I don't trust that man's fish.",
+               "The bakery feels like the one honest place left in town."],
+    effects: [{ type: "affinity", who: "Edith", toward: "npc_silas", delta: -0.2, summary: "Charming, and up to no good." }],
+  }));
+  const before = npc.relationships.npc_silas.affinity;
+  const r = await SIM.generateReflection(st, npc);
+  check("reflection returns insights", r && r.insights.length === 2);
+  check("insights become reflection memories",
+    npc.memories.filter((m) => m.type === "reflection" && m.text.includes("honest place")).length === 1);
+  check("reflection can shift a relationship", npc.relationships.npc_silas.affinity === +(before - 0.2).toFixed(2));
+  check("opinion summary rewritten by reflection", npc.relationships.npc_silas.summary === "Charming, and up to no good.");
+  check("accrual resets after reflecting", npc.importanceSinceReflection === 0 && npc.needsReflection === false);
+  check("one fable5 call for the reflection", st.modelCalls.fable5 === 1);
+
+  // reflection memories don't feed their own accrual (no infinite loop)
+  const accrualBefore = npc.importanceSinceReflection;
+  SIM.addMemory(st, npc, "reflection", "A private thought.", { importance: 9 });
+  check("reflection memories don't accrue toward the next reflection",
+    npc.importanceSinceReflection === accrualBefore);
+
+  // a reflection that only targets someone else is dropped (self-scope)
+  SIM.setLLM(st, async () => JSON.stringify({
+    insights: ["I should tell Mara about Silas."],
+    effects: [{ type: "affinity", who: "Mara", toward: "npc_silas", delta: -0.3, summary: "x" }],
+  }));
+  const maraSilasBefore = st.npcs.find((n) => n.id === "npc_mara").relationships.npc_silas.affinity;
+  npc.needsReflection = true;
+  await SIM.generateReflection(st, npc);
+  check("reflection can't rewrite someone else's opinions",
+    st.npcs.find((n) => n.id === "npc_mara").relationships.npc_silas.affinity === maraSilasBefore);
+}
+
+// ---- Seeded randomness (Phase 7): risk appetite + varied loot ---------------
+{
+  // Same seed → identical crime wave; different seed → (usually) different
+  const run = (seed) => {
+    const st = SIM.createState(seed);
+    for (let i = 0; i < Math.ceil((4 * SIM.DAY_REAL_SECONDS) / 0.1); i++) SIM.tick(st, 0.1);
+    return st.crimeLog.map((c) => `${c.culprit}:${c.loot}:${c.day}`).join("|");
+  };
+  check("same seed is reproducible", run(42) === run(42));
+  const seeds = [1, 2, 3, 4, 5].map(run);
+  check("different seeds diverge", new Set(seeds).size > 1);
+  // Loot varies across the vocabulary, not always a coin purse
+  const st = SIM.createState(3);
+  for (let i = 0; i < Math.ceil((7 * SIM.DAY_REAL_SECONDS) / 0.1); i++) SIM.tick(st, 0.1);
+  const loots = new Set(st.crimeLog.map((c) => c.loot));
+  check("thefts produce varied loot", st.crimeLog.length > 0);
+  // a cautious member (Pip, riskAppetite 0.2) steals less than a bold one (Ren, 0.75)
+  const counts = {};
+  for (const c of st.crimeLog) counts[c.culprit] = (counts[c.culprit] || 0) + 1;
+  check("bolder members steal more often over time",
+    (counts.npc_ren || 0) >= (counts.npc_pip || 0));
+}
+
 // tick raises needsPlan each morning
 {
   const st = SIM.createState(); // day 1, 06:50

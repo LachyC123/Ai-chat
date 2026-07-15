@@ -16,7 +16,9 @@ const SIM = mod.exports;
 
 const DAYS = Number(process.argv[2] || 3);
 const DT = 0.1; // real seconds per step
-const state = SIM.createState();
+// Fixed seed → reproducible crime waves (Phase 7 randomness is seeded).
+const SEED = Number(process.argv[3] || 12345);
+const state = SIM.createState(SEED);
 const [mara, tomas, edith, bram, silas, ren, pip] = state.npcs;
 
 let failures = 0;
@@ -79,17 +81,11 @@ for (let i = 0; i < totalSteps; i++) {
     if (crossed && !ok()) fail(`day ${day} ${t}: expected ${desc}`);
   }
 
-  // Jail spot check: day-2 noon — if the first culprit was arrested day 1,
-  // they are mid-sentence and must be sitting inside the station.
-  if (day === 2 && lastMin < SIM.hm("12:00") && minutes >= SIM.hm("12:00")) {
-    const crime = state.crimeLog[0];
-    const culprit = crime && crime.arrestDay === 1 && state.npcs.find((n) => n.id === crime.culprit);
-    if (culprit) {
-      if (!culprit.jailedUntil) fail("day 2 noon: first culprit should still be jailed");
-      else if (!SIM.insideBuilding(SIM.STATION(), culprit.x, culprit.y))
-        fail(`day 2 noon: jailed ${culprit.name} should be inside the station, is at (${culprit.x.toFixed(1)}, ${culprit.y.toFixed(1)})`);
-    }
-  }
+  // Invariant every tick: anyone currently jailed sits inside the station.
+  for (const n of state.npcs)
+    if (n.jailedUntil && n.path === null && !SIM.insideBuilding(SIM.STATION(), n.x, n.y)
+        && Math.hypot(n.x - SIM.STATION().cell.x, n.y - SIM.STATION().cell.y) > 3)
+      fail(`${n.name} is jailed but roaming free at (${n.x.toFixed(1)}, ${n.y.toFixed(1)})`);
 
   lastMin = minutes; lastDay = day;
 }
@@ -141,28 +137,30 @@ const ovenMems = [mara, tomas].flatMap((n) => n.memories.filter((mm) => mm.text.
 if (ovenMems.length < DAYS || ovenMems.length > 14 * DAYS)
   fail(`oven-session memories off: ${ovenMems.length} over ${DAYS} days`);
 
-// The bakery runs like a bakery: visitors buy, staff sell — mirrored counts
+// The bakery runs like a bakery: visitors buy, staff sell — mirrored counts.
+// (With this seed no baker is ever jailed, so the shop stays staffed.)
 const bought = state.npcs.flatMap((n) => n.memories.filter((mm) => mm.text.startsWith("Bought a fresh loaf")));
 const sold = [mara, tomas].flatMap((n) => n.memories.filter((mm) => mm.text.startsWith("Sold a fresh loaf")));
 const edithBought = edith.memories.filter((mm) => mm.text.startsWith("Bought a fresh loaf"));
 if (edithBought.length < DAYS) fail(`Edith should buy bread daily: ${edithBought.length} purchases over ${DAYS} days`);
 if (sold.length !== bought.length) fail(`sales (${sold.length}) should mirror purchases (${bought.length})`);
 
-// ---- Crime & law chain (Phase 5) — fully deterministic, no LLM ------------
+// ---- Crime & law chain (Phase 5+7) — seeded, so lifecycle not exact days ---
 if (state.crimeLog.length < 1) fail("no crimes over the run — the market should tempt somebody");
 const c0 = state.crimeLog[0];
 if (c0) {
   const culprit = state.npcs.find((n) => n.id === c0.culprit);
   const victim = state.npcs.find((n) => n.id === c0.victim);
   if (!culprit?.gang) fail("first culprit should be a gang member");
-  if (c0.day !== 1) fail(`first theft should happen day 1, got day ${c0.day}`);
-  if (c0.reportedDay !== 1) fail(`first theft should be reported day 1 (witness meets Bram on his rounds), got ${c0.reportedDay}`);
-  if (c0.arrestDay === null || c0.arrestDay > 2)
-    fail(`first culprit should be caught within a day of the report, got ${c0.arrestDay}`);
-  if (DAYS >= 3 && c0.releaseDay !== c0.arrestDay + 1)
+  if (c0.loot === undefined) fail("crime should record what was stolen");
+  // Full lifecycle: reported after the theft, arrested after the report,
+  // released one day after arrest.
+  if (c0.reportedDay === null || c0.reportedDay < c0.day) fail(`report day off: ${c0.reportedDay}`);
+  if (c0.arrestDay === null || c0.arrestDay < c0.reportedDay) fail(`arrest day off: ${c0.arrestDay}`);
+  if (c0.releaseDay !== null && c0.releaseDay !== c0.arrestDay + 1)
     fail(`culprit should serve exactly one day: arrested ${c0.arrestDay}, released ${c0.releaseDay}`);
   // memories on every side of the event
-  if (!victim.memories.some((mm) => mm.text.includes("coin purse is gone")))
+  if (!victim.memories.some((mm) => mm.text.includes(`${c0.loot} is gone`)))
     fail("victim never noticed the theft");
   if (!c0.witnesses.every((wid) => state.npcs.find((n) => n.id === wid)
         .memories.some((mm) => mm.text.startsWith("Saw ") && mm.importance === 9)))
@@ -173,7 +171,7 @@ if (c0) {
     fail("Bram has no arrest memory");
   if (!culprit.memories.some((mm) => mm.text.includes("clapped me in the station cell")))
     fail("culprit has no jail memory");
-  if (DAYS >= 3 && !culprit.memories.some((mm) => mm.text.startsWith("Out of the cell")))
+  if (c0.releaseDay !== null && !culprit.memories.some((mm) => mm.text.startsWith("Out of the cell")))
     fail("culprit has no release memory");
 }
 // Hierarchy actually reshuffles: an arrest drops your cred below everyone,
@@ -187,6 +185,47 @@ if (DAYS >= 3) {
     fail("Silas was arrested but still leads the crew — hierarchy never shifted");
   const freeRanks = [silas, ren, pip].filter((n) => !n.jailedUntil).map((n) => n.gangRank);
   if (!freeRanks.includes("leader")) fail("nobody leads the crew");
+}
+
+// ---- Reflection accrual (Phase 7): importance piles up and flags a pass --
+// No LLM here, so reflections never actually fire — but the trigger must arm.
+if (!state.npcs.some((n) => n.needsReflection || n.importanceSinceReflection > 0))
+  fail("no NPC accumulated any reflection weight over the run");
+if (!state.npcs.some((n) => n.needsReflection))
+  fail(`nobody crossed the reflection threshold (${SIM.REFLECTION_THRESHOLD}) in ${DAYS} days`);
+// Reflection memories don't feed their own accrual (would loop forever)
+for (const n of state.npcs)
+  if (n.needsReflection && n.memories.filter((m) => m.type !== "reflection")
+        .reduce((s, m) => s + m.importance, 0) < SIM.REFLECTION_THRESHOLD)
+    fail(`${n.name} flagged reflection without enough non-reflection weight`);
+
+// ---- Cascading consequence: jailed staff shut the shop (Phase 7) ---------
+{
+  const st4 = SIM.createState(SEED);
+  // Run to mid-morning, then jail BOTH bakers — simulating an arrest wave.
+  while (!(st4.clock.day === 1 && st4.clock.minutes >= SIM.hm("08:30"))) SIM.tick(st4, DT);
+  const [m4, t4] = st4.npcs;
+  m4.jailedUntil = SIM.absMinutes(st4.clock) + 100000;
+  t4.jailedUntil = SIM.absMinutes(st4.clock) + 100000;
+  if (SIM.bakeryOnDuty(st4) !== null) fail("bakery reads staffed with both bakers jailed");
+  while (!(st4.clock.day === 1 && st4.clock.minutes >= SIM.hm("11:00"))) SIM.tick(st4, DT);
+  const shutMemos = st4.npcs.flatMap((n) => n.memories.filter((mm) => mm.text.includes("bakery was shut")));
+  if (!shutMemos.length) fail("no customer noticed the shop was shut while both bakers were jailed");
+  if (!shutMemos.some((mm) => mm.text.includes("taken in by the constable")))
+    fail("shut-shop memory should name the arrest as the cause");
+  if (st4.npcs.some((n) => !n.gang && !n.isOfficer && n.lastPurchaseDay === 1))
+    fail("someone bought bread from an unstaffed bakery");
+}
+
+// ---- Randomness: different seeds produce different crime waves ------------
+{
+  const summarize = (seed) => {
+    const s = SIM.createState(seed);
+    for (let i = 0; i < Math.ceil((3 * SIM.DAY_REAL_SECONDS) / DT); i++) SIM.tick(s, DT);
+    return s.crimeLog.map((c) => `${c.culprit}:${c.loot}`).join(",");
+  };
+  const a = summarize(1), b = summarize(2), c = summarize(3);
+  if (a === b && b === c) fail("crime waves identical across seeds — randomness not wired");
 }
 
 // NPCs notice each other (colleagues share the bakery)
@@ -227,13 +266,19 @@ const blocked = SIM.findPath(state.map, 5, 5, 6, 22); // pond center
 if (blocked !== null) fail("pathfinder returned a path into solid water");
 
 // ---- Mock-embedder run: pipeline + batching cost ceiling ------------------
+// 32-dim rolling hash so distinct texts get distinct vectors (an exact
+// match is then uniquely the nearest — mirrors real embedding behavior).
 const mockEmbed = async (texts) => texts.map((t) => {
-  const v = new Array(8).fill(0);
-  for (let i = 0; i < t.length; i++) v[i % 8] += t.charCodeAt(i) / 255;
+  const v = new Array(32).fill(0);
+  let h = 2166136261;
+  for (let i = 0; i < t.length; i++) {
+    h = (Math.imul(h ^ t.charCodeAt(i), 16777619)) >>> 0;
+    v[i % 32] += ((h % 2000) / 1000) - 1;
+  }
   const n = Math.hypot(...v) || 1;
   return v.map((x) => x / n);
 });
-const st2 = SIM.createState();
+const st2 = SIM.createState(777);
 SIM.setEmbedder(st2, mockEmbed);
 const pumpEvery = 200; // ticks, ~= the browser's periodic queue pump
 for (let i = 0; i < Math.ceil((2 * SIM.DAY_REAL_SECONDS) / DT); i++) {
@@ -247,11 +292,18 @@ if (!mems2.length || !mems2.every((mm) => mm.embedding))
 if (st2.modelCalls.embeddings === 0 || st2.modelCalls.embeddings > mems2.length)
   fail(`mock run: ${st2.modelCalls.embeddings} embed calls for ${mems2.length} memories (batching broken or per-tick calls)`);
 if (st2.modelCalls.fable5 !== 0) fail("mock run: fable5 calls without an LLM provider");
-// Embedded retrieval end-to-end: a gossip query should surface the market memory
-const qv = (await mockEmbed(["Went to the market square to hear the day's news."]))[0];
-const top2 = SIM.retrieveMemories(st2, st2.npcs[0], { queryVec: qv, N: 3 });
-if (!top2.some((r) => r.memory.text.includes("market square")))
-  fail("embedded retrieval: exact-text query didn't surface the matching memory in top 3");
+// Embedded retrieval end-to-end: an exact-text query, scored on relevance
+// alone, must rank its own memory first (cosine 1.0). Uses a memory that
+// actually exists this run, decoupled from the now-randomized schedules.
+const anchorNpc = st2.npcs.find((n) => n.memories.length > 3);
+const anchorMem = anchorNpc.memories[anchorNpc.memories.length - 1];
+const qv = (await mockEmbed([anchorMem.text]))[0];
+const top2 = SIM.retrieveMemories(st2, anchorNpc,
+  { queryVec: qv, N: 3, weights: { recency: 0, importance: 0, relevance: 1 } });
+// The top result must be an exact-text match (relevance 1.0) — duplicate
+// daily memories share the text, so match on text, not id.
+if (top2[0].memory.text !== anchorMem.text || top2[0].relevance < 0.999)
+  fail("embedded retrieval: exact-text query didn't rank a matching memory first on relevance");
 
 console.log(`Simulated ${DAYS} day(s) in ${totalSteps} ticks — ` +
             `${totalMems} memories across ${state.npcs.length} NPCs, ` +

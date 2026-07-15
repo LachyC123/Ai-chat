@@ -346,6 +346,13 @@ const SIM = (() => {
     // threshold, never a model call. Escalation to a re-plan happens in
     // the consumer via takeInterrupt().
     if (mem.importance >= REPLAN_THRESHOLD) npc.pendingInterrupt = mem;
+    // Reflection accrual (plan §3.4): when the weight of what's happened
+    // since the last reflection crosses a threshold, flag a synthesis pass.
+    // Reflections themselves don't count, or they'd feed back forever.
+    if (type !== "reflection") {
+      npc.importanceSinceReflection += mem.importance;
+      if (npc.importanceSinceReflection >= REFLECTION_THRESHOLD) npc.needsReflection = true;
+    }
     return mem;
   }
 
@@ -444,16 +451,40 @@ const SIM = (() => {
     }
   }
 
-  // Non-staff visitors buy bread when a worker is around (once per day) —
-  // items are referenceable in memory per plan §5.
+  // A business only actually operates when a non-jailed staffer is present.
+  // This is the hinge for cascading consequences (plan design pillar
+  // "each action impacts another"): if the staff are arrested, or simply
+  // chose a day at the park, the shop is DARK — and everyone who came for
+  // bread finds out and reacts.
+  function bakeryStaff(state) {
+    return state.npcs.filter((o) => o.workplace === BUILDINGS[0].id && !o.jailedUntil);
+  }
+  function bakeryOnDuty(state) {
+    if (!isOpen(BUILDINGS[0], state.clock.minutes)) return null;
+    // a staffer anywhere inside the shop (any workstation) is minding it
+    return bakeryStaff(state).find((o) => insideBuilding(BUILDINGS[0], o.x, o.y)) || null;
+  }
+
+  // Non-staff visitors buy bread when a worker is on duty (once per day),
+  // otherwise they notice the shop is shut and wonder why (a real
+  // consequence memory that can bend their day).
   function maybeBuyBread(state, npc) {
-    if (npc.lastPurchaseDay === state.clock.day) return;
+    if (npc.lastPurchaseDay === state.clock.day || npc.noticedShutDay === state.clock.day) return;
     const spot = npc.locations.bakery;
     if (Math.hypot(npc.x - spot.x, npc.y - spot.y) > 0.6) return;
-    if (!isOpen(BUILDINGS[0], state.clock.minutes)) return;
-    const worker = state.npcs.find((o) =>
-      o.workplace === BUILDINGS[0].id && Math.hypot(o.x - npc.x, o.y - npc.y) <= 3);
-    if (!worker) return;
+    const worker = bakeryOnDuty(state);
+    if (!worker) {
+      // Came for bread; nobody's minding the counter.
+      npc.noticedShutDay = state.clock.day;
+      const jailedStaff = state.npcs.filter((o) =>
+        o.workplace === BUILDINGS[0].id && o.jailedUntil).map((o) => o.name);
+      const why = jailedStaff.length
+        ? `— word is ${jailedStaff.join(" and ")} got taken in by the constable`
+        : "and no one was minding it";
+      addMemory(state, npc, "observation",
+        `Went for my bread but the bakery was shut ${why}.`, { importance: 6 });
+      return;
+    }
     npc.lastPurchaseDay = state.clock.day;
     takeWorldItem(state, 10, 8, 3); // a loaf leaves the counter if one's there
     npc.inventory.push("bread_loaf");
@@ -601,7 +632,7 @@ const SIM = (() => {
       traits: ["calculating", "charming", "patient"], pronoun: "he",
       wants: "easy coin and no attention",
       goal: "keep the crew fed without the constable ever looking his way",
-      gang: true, cred: 3, homeSpot: { x: 33, y: 26 },
+      gang: true, cred: 3, homeSpot: { x: 33, y: 26 }, riskAppetite: 0.35,
       secret: "he runs the Mudlarks, the town's petty thieving crew; the fishing is a cover",
       home: "building_hideout", workplace: null,
       anchors: SILAS_ANCHORS, inventory: ["fishing_rod", "lockpicks"],
@@ -620,7 +651,7 @@ const SIM = (() => {
       traits: ["restless", "light-fingered", "fiercely loyal"], pronoun: "she",
       wants: "excitement, and Silas's approval",
       goal: "prove she can run a job alone",
-      gang: true, cred: 2, homeSpot: { x: 32, y: 26 },
+      gang: true, cred: 2, homeSpot: { x: 32, y: 26 }, riskAppetite: 0.75,
       secret: "she is the Mudlarks' lieutenant and the best pickpocket in town",
       home: "building_hideout", workplace: null,
       anchors: REN_ANCHORS, inventory: ["dice"],
@@ -639,7 +670,7 @@ const SIM = (() => {
       traits: ["jumpy", "eager", "soft-hearted"], pronoun: "he",
       wants: "to belong somewhere, and maybe to stop feeling guilty",
       goal: "figure out whether crew life is really for him",
-      gang: true, cred: 1, homeSpot: { x: 34, y: 26 },
+      gang: true, cred: 1, homeSpot: { x: 34, y: 26 }, riskAppetite: 0.2,
       secret: "he is the Mudlarks' lookout, and he's not sure his heart is in it",
       home: "building_hideout", workplace: null,
       anchors: PIP_ANCHORS, inventory: ["slingshot"],
@@ -673,11 +704,15 @@ const SIM = (() => {
       // crime & law runtime (Phase 5)
       cred: def.cred || 0, gangRank: null, jailedUntil: null,
       lastTheftDay: 0, lastReleaseDay: 0, pursuit: null,
+      riskAppetite: def.riskAppetite ?? 0.5, // how boldly a gang member steals
+      // business consequences (Phase 7)
+      noticedShutDay: 0, consideredTheftDay: 0,
       // memory stream (plan §6 memory schema objects)
       memories: [], perceptionCooldowns: {}, lastActivityKey: null,
-      // planning (Phase 3)
+      // planning (Phase 3) + reflection (Phase 7)
       current_plan: def.anchors.map((a) => a.slice()),
       needsPlan: false, lastPlanDay: 0, planFailures: 0,
+      needsReflection: false, importanceSinceReflection: 0, reflectionFailures: 0, lastReflectionDay: 0,
       pendingInterrupt: null, lastReplanAt: null,
       conversation: [],
       // runtime
@@ -720,6 +755,7 @@ const SIM = (() => {
   // Anthropic API when a key is configured; tests wire a mock; the default
   // is none and the sim keeps running on the fallback schedule.
   const REPLAN_THRESHOLD = 7;      // importance that warrants a re-plan
+  const REFLECTION_THRESHOLD = 40; // summed importance that triggers a reflection
   const REPLAN_COOLDOWN_MIN = 120; // sim minutes between re-plan calls
   const PLACES = ["home", "bakery", "market", "park"];
 
@@ -823,6 +859,55 @@ ${JSON.stringify(npc.defaultAnchors)}`;
         { importance: 3 });
       return plan;
     } catch { npc.planFailures++; return null; }
+  }
+
+  // ---- Reflection (plan §3.4): synthesize memories into higher-level
+  // insights that get stored back and compound over time. This is what
+  // turns raw events into evolving opinions — "Bram keeps turning up
+  // wherever Silas goes" — and it can rewrite relationship summaries.
+  function buildReflectionPrompt(state, npc, retrieved) {
+    const system =
+`You are the inner voice of ${npc.name}, a ${npc.role} in a small town.
+${personaLines(npc)}
+Look back over recent events and draw 1-3 higher-level insights — patterns, changing feelings about people, shifts in what you want. Be specific and in-character; each insight is something ${npc.name} now believes, not a summary of events.
+Respond with ONLY JSON, no code fences: {"insights":["...","..."],"effects":[...]}
+Use "effects" ONLY for a genuine change of heart this reflection produces (an opinion that has really shifted, a new goal). Most reflections: "effects":[]. Same effect vocabulary as conversations:
+{"type":"affinity","who":"${npc.name}","toward":"<name or player>","delta":<-0.3..0.3>,"summary":"<new one-line opinion>"}
+{"type":"goal","who":"${npc.name}","goal":"<revised long-term goal>"}`;
+    const mems = retrieved.map((r) => `- (${r.memory.timestamp}) [${r.memory.type}] ${r.memory.text}`).join("\n");
+    const rel = Object.entries(npc.relationships)
+      .map(([k, v]) => `${k}: affinity ${v.affinity} — ${v.summary}`).join("\n");
+    const prompt =
+`Day ${state.clock.day}, ${fmtClock(state.clock.minutes)}.
+What's been on your mind lately:
+${mems}
+How you currently see people:
+${rel}`;
+    return { system, prompt };
+  }
+
+  async function generateReflection(state, npc) {
+    npc.needsReflection = false;
+    npc.importanceSinceReflection = 0;
+    npc.lastReflectionDay = state.clock.day;
+    let queryVec = null;
+    try { queryVec = await embedText(state, `what matters to ${npc.name} lately`); } catch {}
+    // Reflection leans on importance + recency, not query relevance
+    const retrieved = retrieveMemories(state, npc,
+      { queryVec, N: 12, weights: { recency: 1.2, importance: 2, relevance: 0.5 } });
+    const { system, prompt } = buildReflectionPrompt(state, npc, retrieved);
+    try {
+      const raw = await callFable5(state, { system, prompt, maxTokens: 300 });
+      const m = String(raw || "").match(/\{[\s\S]*\}/);
+      if (!m) { npc.reflectionFailures++; return null; }
+      const o = JSON.parse(m[0]);
+      const insights = Array.isArray(o.insights) ? o.insights.filter((s) => typeof s === "string" && s.trim()) : [];
+      if (!insights.length) { npc.reflectionFailures++; return null; }
+      for (const ins of insights.slice(0, 3))
+        addMemory(state, npc, "reflection", ins.trim().slice(0, 160), { importance: 6 });
+      const applied = applyEffects(state, o.effects, new Set([npc.id])); // only the reflector changes
+      return { insights, applied };
+    } catch { npc.reflectionFailures++; return null; }
   }
 
   // Consume a pending interruption if it clears the re-plan cooldown.
@@ -1161,22 +1246,38 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       .filter((o) => !o.gang && !o.isOfficer && Math.hypot(o.x - npc.x, o.y - npc.y) <= PERCEPTION_RADIUS)
       .sort((a, b) => Math.hypot(a.x - npc.x, a.y - npc.y) - Math.hypot(b.x - npc.x, b.y - npc.y));
     if (civs.length < 2) return;
-    const victim = civs[0], witnesses = civs.slice(1);
+    // Only CONSIDER a theft once per market visit; whether it actually
+    // happens is a roll against nerve (risk appetite) — so different runs
+    // and different crew members produce different crime waves.
+    if (npc.consideredTheftDay === state.clock.day) return;
+    npc.consideredTheftDay = state.clock.day;
+    if (state.rng() > npc.riskAppetite) {
+      addMemory(state, npc, "observation", "Sized up the market crowd but the moment didn't feel right. Left it.");
+      return;
+    }
+    // Pick a mark and what to lift — a bit of variety in the loot.
+    const victim = civs[Math.floor(state.rng() * civs.length)];
+    const witnesses = civs.filter((c) => c !== victim);
+    const loot = ["coin purse", "silver ring", "pocket watch", "loaf", "kerchief"][Math.floor(state.rng() * 5)];
+    const lootItem = loot.replace(/\s+/g, "_");
     state.lastCrimeDay = state.clock.day;
     npc.lastTheftDay = state.clock.day;
     state.crimeLog.push({
       id: `crime_${state.crimeLog.length + 1}`, day: state.clock.day, ts: absMinutes(state.clock),
-      culprit: npc.id, victim: victim.id, witnesses: witnesses.map((w) => w.id),
+      culprit: npc.id, victim: victim.id, witnesses: witnesses.map((w) => w.id), loot,
       reported: false, reportedDay: null, arrestDay: null, releaseDay: null,
     });
-    npc.inventory.push("coin_purse");
+    npc.inventory.push(lootItem);
+    // The victim loses the actual item if they had it
+    const vIdx = victim.inventory.indexOf(lootItem);
+    if (vIdx >= 0) victim.inventory.splice(vIdx, 1);
     addMemory(state, npc, "observation",
-      `Lifted ${victim.name}'s coin purse in the market crowd. Clean work.`, { importance: 8 });
+      `Lifted ${victim.name}'s ${loot} in the market crowd. Clean work.`, { importance: 8 });
     addMemory(state, victim, "observation",
-      "My coin purse is gone — someone took it right off me in the market crowd!", { importance: 8 });
+      `My ${loot} is gone — someone took it right off me in the market crowd!`, { importance: 8 });
     for (const w of witnesses)
       addMemory(state, w, "observation",
-        `Saw ${npc.name} slip ${victim.name}'s purse away in the market crowd!`, { importance: 9 });
+        `Saw ${npc.name} slip ${victim.name}'s ${loot} away in the market crowd!`, { importance: 9 });
   }
 
   function arrest(state, officer, culprit, crime) {
@@ -1191,7 +1292,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       `Arrested ${culprit.name} for the market theft and marched ${culprit.pronoun === "he" ? "him" : "her"} to the cell.`,
       { importance: 9 });
     addMemory(state, culprit, "observation",
-      `${officer.name} clapped me in the station cell for the purse job. A full day locked up.`,
+      `${officer.name} clapped me in the station cell for the ${crime.loot || "market"} job. A full day locked up.`,
       { importance: 9 });
     for (const o of state.npcs)
       if (o !== officer && o !== culprit && Math.hypot(o.x - culprit.x, o.y - culprit.y) <= 5)
@@ -1210,7 +1311,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
         crime.reported = true; crime.reportedDay = state.clock.day;
         const culprit = byId(state, crime.culprit);
         addMemory(state, w, "dialogue",
-          `Told ${officer.name} what I saw — ${culprit.name} took that purse at the market.`, { importance: 6 });
+          `Told ${officer.name} what I saw — ${culprit.name} took ${byId(state, crime.victim).name}'s ${crime.loot || "goods"} at the market.`, { importance: 6 });
         addMemory(state, officer, "dialogue",
           `${w.name} reported the market theft: ${culprit.name} is the thief. Time to bring ${culprit.pronoun === "he" ? "him" : "her"} in.`,
           { importance: 9 });
@@ -1365,8 +1466,12 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
   }
 
   // ---- State + tick ----------------------------------------------------
-  function createState() {
+  // Seedable RNG (Phase 7) so runs genuinely diverge but tests stay
+  // reproducible. `createState(seed)` fixes the world's luck.
+  function createState(seed = (Math.random() * 2 ** 32) >>> 0) {
+    const rng = mulberry32(seed >>> 0);
     const state = {
+      seed, rng,
       map: buildMap(),
       buildings: BUILDINGS,
       clock: { day: 1, minutes: hm("06:50") },
@@ -1459,6 +1564,8 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     refreshGangRanks, wantedNames, GANG_NAME, STATION,
     spawnItem, takeWorldItem, pickupNearestItem, bakeryBreadCount,
     parseDialogueResponse, applyEffects, playerSheet,
+    buildReflectionPrompt, generateReflection, bakeryOnDuty, bakeryStaff,
+    REFLECTION_THRESHOLD,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -1507,12 +1614,14 @@ if (typeof module !== "undefined") module.exports = SIM;
           cred: n.cred, gangRank: n.gangRank, jailedUntil: n.jailedUntil,
           lastTheftDay: n.lastTheftDay, lastReleaseDay: n.lastReleaseDay,
           role: n.role, goal: n.goal, gang: n.gang, isOfficer: n.isOfficer,
+          importanceSinceReflection: n.importanceSinceReflection,
+          lastReflectionDay: n.lastReflectionDay, relationships2: undefined,
           memories: n.memories.map((m) =>
             ({ ...m, embedding: m.embedding ? vecEnc(m.embedding) : null })),
         };
       }
       localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 6, clock: state.clock, memCounter: state.memCounter,
+        v: 7, clock: state.clock, memCounter: state.memCounter, seed: state.seed,
         player: { x: state.player.x, y: state.player.y,
                   role: state.player.role, faction: state.player.faction,
                   inventory: state.player.inventory },
@@ -1528,7 +1637,7 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 6) return; // older saves start fresh
+      if (s.v !== 7) return; // older saves start fresh
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
       if (s.player.role) state.player.role = s.player.role;
@@ -1559,6 +1668,8 @@ if (typeof module !== "undefined") module.exports = SIM;
         if (d.goal) n.goal = d.goal;
         if (d.gang !== undefined) n.gang = d.gang;
         if (d.isOfficer !== undefined) n.isOfficer = d.isOfficer;
+        if (d.importanceSinceReflection) n.importanceSinceReflection = d.importanceSinceReflection;
+        if (d.lastReflectionDay) n.lastReflectionDay = d.lastReflectionDay;
         n.memories = d.memories.map((m) =>
           ({ ...m, embedding: m.embedding ? vecDec(m.embedding) : null }));
         state.embedQueue.push(...n.memories.filter((m) => !m.embedding));
@@ -1660,23 +1771,30 @@ if (typeof module !== "undefined") module.exports = SIM;
   }
   applyLLMProvider();
 
-  // Planning pump: daily plans each in-game morning + escalated re-plans
-  // on high-importance interruptions (plan §3.5-3.6). One NPC per tick so
-  // Fable 5 calls stay staggered.
+  // Cognition pump: daily plans each morning, escalated re-plans on
+  // high-importance interruptions (plan §3.5-3.6), and reflection when
+  // enough has piled up (plan §3.4). One Fable 5 call per tick, staggered.
   let planningInFlight = false;
   setInterval(async () => {
     if (!state.llm || planningInFlight) return;
-    let npc = null, reason = null;
+    let job = null;
     for (const n of state.npcs) {
-      if (n.needsPlan) { npc = n; break; }
+      if (n.jailedUntil) continue;
+      if (n.needsPlan) { job = { kind: "plan", npc: n }; break; }
       const interrupt = SIM.takeInterrupt(state, n);
-      if (interrupt) { npc = n; reason = interrupt.text; break; }
+      if (interrupt) { job = { kind: "plan", npc: n, reason: interrupt.text }; break; }
+      if (n.needsReflection) { job = { kind: "reflect", npc: n }; break; }
     }
-    if (!npc) return;
-    npc.needsPlan = false;
+    if (!job) return;
     planningInFlight = true;
-    try { await SIM.generatePlan(state, npc, { reason }); }
-    catch (e) { console.warn("planning failed:", e.message); }
+    try {
+      if (job.kind === "plan") { job.npc.needsPlan = false; await SIM.generatePlan(state, job.npc, { reason: job.reason }); }
+      else {
+        const r = await SIM.generateReflection(state, job.npc);
+        if (r) { toast(`${job.npc.name} reflects: ${r.insights[0]}`); (r.applied || []).forEach(toast); }
+      }
+    }
+    catch (e) { console.warn("cognition failed:", e.message); }
     finally { planningInFlight = false; renderMemPanel(); }
   }, 3000);
 
@@ -2200,8 +2318,15 @@ if (typeof module !== "undefined") module.exports = SIM;
       ctx.fillStyle = color; ctx.fillText(text, wx * TILE, wy * TILE + 5);
     };
     for (const b of state.buildings) {
-      const closed = b.open_hours && !SIM.isOpen(b, state.clock.minutes);
-      label(b.rect.x + b.rect.w / 2, b.rect.y - 0.9, b.name + (closed ? " · closed" : ""), "#f2ead8");
+      let tag = "";
+      if (b.id === "building_bakery") {
+        // "Open" only when a staffer is actually on duty — the visible
+        // consequence of an arrest or a chosen day off.
+        if (!SIM.isOpen(b, state.clock.minutes)) tag = " · closed";
+        else tag = SIM.bakeryOnDuty(state) ? " · open" : " · SHUT (no baker)";
+      } else if (b.open_hours && !SIM.isOpen(b, state.clock.minutes)) tag = " · closed";
+      label(b.rect.x + b.rect.w / 2, b.rect.y - 0.9, b.name + tag,
+        tag.includes("SHUT") ? "#ff9a7a" : "#f2ead8");
     }
     for (const n of state.npcs) {
       const bubble = bubbles.get(n.id);

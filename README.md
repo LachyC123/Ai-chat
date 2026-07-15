@@ -65,9 +65,32 @@ localStorage — never in the repo.
 Whichever provider is active drives the same autonomy layer: every NPC plans
 their own day each in-game morning (1 call/NPC/day, staggered), NPCs who meet
 strike up their own conversations (1 call per line, max 4 lines, per-pair
-cooldown), you can talk to anyone in free text (1 call/turn), and
-high-importance events trigger escalated re-plans. Without any key: fallback
-rhythms + canned dialogue, no NPC-to-NPC chatter.
+cooldown), you can talk to anyone in free text (1 call/turn), high-importance
+events trigger escalated re-plans, and once enough has happened to someone they
+**reflect** — synthesizing their memories into higher-level insights that get
+stored back and can rewrite their opinions and goals ("the market crowd is
+where all the trouble begins" → a changed relationship with the fisherman).
+Without any key: fallback rhythms + canned dialogue, no NPC-to-NPC chatter.
+
+### Consequences ripple (nothing is isolated)
+
+Actions land on other people. The clearest case: a shop only *operates* when
+a non-jailed staffer is actually inside it — so if both bakers get arrested (or
+simply choose a day at the park), the bakery is **SHUT**, and every customer
+who comes for bread notices *and knows why* ("word is Mara and Tomas got taken
+in by the constable"). That's a high-importance memory that bends their day and
+spreads through gossip. Crime feeds law feeds the gang hierarchy feeds who's
+around to run the shop — one arrest can quietly reshape the whole town's
+morning.
+
+### Seeded randomness
+
+The world has luck. Each session rolls a seed (`createState(seed)` fixes it);
+gang members have individual **risk appetite**, so whether anyone steals on a
+given day — and who, and what they lift (coin purse, silver ring, pocket watch,
+a loaf…) — varies run to run. Bold Ren works the crowd often; cautious Pip
+rarely does. Same seed replays identically (that's how the tests stay
+deterministic); different seeds tell different stories.
 
 ### Conversations change the world (no scripts)
 
@@ -100,9 +123,10 @@ pure logic, no DOM — so the headless harness runs the exact shipped code in No
 
 ```sh
 node test/retrieval.mjs       # retrieval math vs a hand-written memory log
-node test/planning.mjs        # plan validation, prompts, dialogue, re-plan (mock LLM)
-node test/headless.mjs        # 3 simulated days (default)
+node test/planning.mjs        # plans, dialogue effects, reflection, gang math (mock LLM)
+node test/headless.mjs        # 3 simulated days (default), seed 12345
 node test/headless.mjs 7      # a full week
+node test/headless.mjs 3 99   # a different seed → a different crime wave
 ```
 
 `retrieval.mjs` validates the scoring function (α·recency + β·importance +
@@ -161,10 +185,13 @@ calls (never per-tick), `fable5` still zero (instrumented via
       stall goods, pickups with E, held-item rendering), player identity (role,
       faction, inventory — a deputized player suppresses street crime), OpenAI
       (`gpt-4o-mini`) as a selectable voice/planning provider alongside Fable 5.
-- [ ] **7a. Reflection** — reflection cadence (insights compound into opinions),
-      relationship summaries that evolve from what actually happens.
-- [ ] **7b. World fill** — remaining buildings, items, shop hours, pathfinding polish,
-      more cast and places.
+- [x] **7. Intellect & ripple** — reflection (threshold-triggered memory synthesis into
+      insights that rewrite opinions/goals); cascading consequences (a business only
+      operates when staff are present, so an arrest or a day off shuts the shop and
+      customers react with the reason); seeded randomness (per-run luck, gang risk
+      appetite, varied loot) so stories diverge run to run.
+- [ ] **8. World fill** — remaining buildings, items, shop hours, pathfinding polish,
+      more cast and places, wider effect vocabulary.
 - [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
 
 ## Architecture notes (Phase 1)
