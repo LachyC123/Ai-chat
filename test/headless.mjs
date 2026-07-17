@@ -251,6 +251,33 @@ if (ateMemos.length < DAYS) fail(`too few meals eaten: ${ateMemos.length} over $
 const maraMeals = mara.memories.filter((mm) => mm.text.includes("Ate one of my own")).length;
 if (maraMeals < DAYS) fail(`Mara didn't keep herself fed: only ${maraMeals} meals over ${DAYS} days`);
 
+// ---- Phase 10: identity + mood + solo crafting ----------------------------
+// Every character carries a full identity all run long.
+for (const n of state.npcs) {
+  if (typeof n.bio !== "string" || n.bio.length < 40) fail(`${n.name} has no real bio`);
+  if (!Number.isFinite(n.age) || n.age <= 0) fail(`${n.name} has no age`);
+  if (n.mood < 0 || n.mood > 100) fail(`${n.name} mood out of range: ${n.mood}`);
+}
+// Mood is lived-in, not frozen: real events (arrests, thefts, meals) moved it,
+// so at least one character has drifted off their starting dial.
+const STARTING_MOOD = { npc_mara: 68, npc_tomas: 58, npc_edith: 62, npc_bram: 60, npc_silas: 52, npc_ren: 54, npc_pip: 48 };
+if (!state.npcs.some((n) => n.mood !== (STARTING_MOOD[n.id] ?? 55)))
+  fail("no NPC's mood ever changed over the run — the mood system is inert");
+// The arrested culprit took a real mood hit from the cell.
+if (c0) {
+  const jailed = state.npcs.find((n) => n.id === c0.culprit);
+  if (!jailed.memories.some((mm) => mm.text.includes("Felt worse")))
+    fail("the arrested culprit never registered a mood hit");
+}
+// Solo crafting: Silas fishes daily and Edith knits daily, producing goods
+// nobody scripted, once per day each.
+if (!silas.memories.some((mm) => mm.text.includes("Landed a fish")))
+  fail("Silas fished for days and never caught anything");
+if (!edith.memories.some((mm) => mm.text.includes("knitting")))
+  fail("Edith knitted for days and never finished a scarf");
+const fishDays = silas.memories.filter((mm) => mm.text.includes("Landed a fish")).length;
+if (fishDays > DAYS) fail(`Silas caught more fish than days: ${fishDays} over ${DAYS}`);
+
 // ---- Rumor: firsthand news reaches non-witnesses via gossip ---------------
 // (No LLM here, so no NPC conversations fire — assert the spread mechanic
 //  directly and prove secondhand memories don't re-propagate.)

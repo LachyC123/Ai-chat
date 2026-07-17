@@ -39,6 +39,15 @@ entirely model-decided, shown as speech bubbles), remember conversations, and
 the bakery runs like a bakery: staff rotate the oven/counter/shelves, Edith
 buys bread when a worker is around.
 
+Every character starts with a **full identity**, not just a stat line: a
+written backstory (who they are, where they came from, what they're afraid of),
+an age, and a **mood** (0–100 contentment) that real events push around — an
+arrest, a robbery, a gift, a good meal, landing honest work. That mood, the
+backstory, and their wants/goals all ride into every prompt, so the model plays
+a person rather than a role. Open the memory panel (**M**) and each character
+shows their card: bio, age, current mood, traits, wants, goal, and what they're
+carrying.
+
 **Design pillars:** legibility over scale · memory is the game · cheap loop, expensive voice.
 
 ## Running
@@ -119,10 +128,24 @@ model decides *what happens*; a small interpreter is only the physics. The
 effect vocabulary: give/take items, **pay coins**, **hire/fire** (a real job
 at the bakery), set roles (get sworn in as the constable's deputy), join or
 leave factions (police / the Mudlarks), shift opinions, rewrite long-term
-goals, plant memories, trigger re-plans. A player sworn into the police
-suppresses street crime nearby; an NPC who quits the gang reshuffles the
-hierarchy on the spot. Invalid or over-reaching effects are dropped silently —
-the sim never breaks on a malformed response.
+goals, plant memories, trigger re-plans, **lift or sink someone's mood**, send
+someone off on an **errand** (`go_to` — they drop what they were doing and head
+to the park/market/bakery/home for a few hours), and **report a crime** to the
+law (a witness naming a thief in conversation feeds the same arrest chain the
+deterministic layer uses — you can talk a case into motion). A player sworn
+into the police suppresses street crime nearby; an NPC who quits the gang
+reshuffles the hierarchy on the spot. Invalid or over-reaching effects are
+dropped silently — the sim never breaks on a malformed response.
+
+### Things people do on their own (solo actions)
+
+Nobody's day is only reactive. Spend real time at a hands-on activity and you
+make something: Silas fishing at the pond lands a **fish**, Edith on her park
+bench finishes a **wool scarf**, and the plan's activity id (`fish`, `forage`,
+`knit`, `whittle`, `garden`, `sketch`) decides what — a physical good, once a
+day, that then flows through the same gift/trade/inventory systems. It's
+deterministic (no shared-RNG draw, so seeded runs stay reproducible) and shows
+up in memories and the held-item art like anything else.
 
 ### A coin economy, and jobs that are real
 
@@ -174,7 +197,11 @@ validation (chronology, known places, must end asleep at home), prompt
 construction (§7 discipline: sheet + retrieved memories + tight format), a
 mock plan actually steering Mara's movement, dialogue turns becoming memories,
 and the interruption → re-plan path with its cooldown. Invalid or failed plan
-calls always fall back to the previous plan.
+calls always fall back to the previous plan. It also covers the Phase 10
+actions: the `mood` effect (nudge, clamp, participant-scoping, memory on a big
+swing), `go_to` errands (override the plan, clear on arrival), `report_crime`
+(a witness feeding the arrest chain, non-witnesses rejected), and solo crafting
+(yields once/day, draws no shared RNG).
 
 `headless.mjs` runs simulated days: NPC at the scheduled place (or inside the
 bakery working a station) at spot-check times, never stuck en route, no NaN
@@ -182,7 +209,10 @@ drift, day rollover, memory volume bounds, perception cooldowns, oven-session
 bounds, no orphaned `related_ids`, and the cost ceiling — zero model calls
 with no provider configured, and with a mock embedder only batched per-write
 calls (never per-tick), `fable5` still zero (instrumented via
-`state.modelCalls`).
+`state.modelCalls`). It also asserts the Phase 10 identity layer over the run:
+every NPC keeps a bio/age/in-range mood, moods actually drift from their
+starting values, the arrested culprit takes a mood hit, and solo crafting
+produces goods (Silas's fish, Edith's scarf) at most once per day.
 
 ## Build phases (plan §9)
 
@@ -232,9 +262,16 @@ calls (never per-tick), `fable5` still zero (instrumented via
       bakery/arrest cascade has teeth); rumor propagation (firsthand news spreads one hop
       per teller, attributed, no echo loops); settings made clear that one OpenAI key runs
       dialogue + planning + embeddings.
-- [ ] **10. World fill** — more runnable businesses, shop hours, pathfinding polish,
+- [x] **10. Identity & richer actions** — every character starts with a full
+      written identity (backstory, age) plus a **mood** (0–100) that real events
+      move (arrest −, robbery −, gift +, honest work +, a good meal +, famine −),
+      all surfaced in prompts and on the character card. New action vocabulary:
+      `mood`, `go_to` (drop everything and run an errand), `report_crime` (talk a
+      case into the arrest chain), and **solo crafting** — time at a `fish`/`knit`/
+      `whittle`/`forage`/`garden`/`sketch` activity produces a real item once a day.
+- [ ] **11. World fill** — more runnable businesses, shop hours, pathfinding polish,
       more cast and places, still-wider effect vocabulary.
-- [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
+- [ ] **12. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
 
 ## Architecture notes (Phase 1)
 

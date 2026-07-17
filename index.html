@@ -47,6 +47,7 @@
               overflow-y: auto; }
   #mempanel .mem { border-bottom: 1px solid rgba(122,106,168,.35); padding: 4px 0; }
   #mempanel .meta { color: #9d8fc7; font-size: 10px; }
+  #mempanel .meta.bio { display: block; font-style: italic; color: #b3a6d6; line-height: 1.4; margin: 3px 0; }
   #mempanel .score { color: #8fd18a; }
   #lastretrieval { border: 1px solid rgba(122,106,168,.5); border-radius: 8px;
                    padding: 6px 8px; margin-bottom: 10px; background: rgba(20,16,38,.5); }
@@ -302,6 +303,8 @@ const SIM = (() => {
     return null;
   }
 
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
   // ---- Clock ---------------------------------------------------------
   const hm = (s) => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
   const fmtClock = (min) => {
@@ -537,7 +540,7 @@ const SIM = (() => {
     ["10:30", "park_time",    "park",   "feeding the birds at the park"],
     ["13:00", "lunch",        "home",   "lunch at home"],
     ["15:00", "market_stroll","market", "browsing the market"],
-    ["16:30", "park_time",    "park",   "knitting on a park bench"],
+    ["16:30", "knit",         "park",   "knitting on a park bench"],
     ["19:00", "evening",      "home",   "settling in for the evening"],
     ["21:00", "sleep",        "home",   "sleeping"],
   ];
@@ -554,7 +557,7 @@ const SIM = (() => {
   ];
   const SILAS_ANCHORS = [
     ["07:30", "wake",            "home",   "waking at the boat shed"],
-    ["09:00", "fishing",         "park",   "fishing at the pond"],
+    ["09:00", "fish",            "park",   "fishing at the pond"],
     ["11:00", "market_business", "market", "working the market crowd"],
     ["14:00", "lie_low",         "home",   "lying low at the shed"],
     ["16:00", "market_evening",  "market", "one more pass of the market"],
@@ -582,6 +585,8 @@ const SIM = (() => {
       traits: ["warm", "gossipy", "proud"], pronoun: "she",
       wants: "the bakery bustling and the town's gossip flowing through her shop",
       goal: "make the bakery the beating heart of the town",
+      age: 44, mood: 68,
+      bio: "Born above this very bakery; took it over when her father's hands gave out. Widowed young, no children — the shop and the town's chatter are her family now. Proud to a fault, generous with bread, ruthless with a rumor. Believes a town runs on who talks to whom over fresh loaves.",
       home: "building_bakery_house", workplace: "building_bakery", stationOffset: 0,
       anchors: MARA_ANCHORS, coins: 30, inventory: ["bread_loaf", "bread_loaf", "spare_key"],
       relationships: {
@@ -598,6 +603,8 @@ const SIM = (() => {
       traits: ["quiet", "practical", "kind"], pronoun: "he",
       wants: "steady work and no trouble",
       goal: "save enough to open his own workshop one day",
+      age: 29, mood: 58,
+      bio: "Drifted into town three winters ago with a toolbox and no story he'd tell. Mara took a chance on him after he fixed her oven for nothing. Cares for an ailing mother two villages over and sends coin when he can. Says little, notices everything, and quietly distrusts easy charm — which is why Silas unsettles him.",
       home: "building_tomas_house", workplace: "building_bakery", stationOffset: 1,
       anchors: TOMAS_ANCHORS, coins: 14, inventory: ["toolbox"],
       relationships: {
@@ -614,6 +621,8 @@ const SIM = (() => {
       traits: ["sharp-tongued", "nostalgic", "kind-hearted"], pronoun: "she",
       wants: "company, fresh bread, and to feel useful",
       goal: "teach somebody to sew properly before her hands give out",
+      age: 71, mood: 62,
+      bio: "Sewed wedding dresses and burial shrouds for this town for fifty years; buried a husband and outlived most of her friends. Lonely in a way she'd never admit, so she fills her days with other people's business and saves the crusty ends of loaves for the errand boy. Her eyes miss nothing and her tongue spares no one, but her heart is soft under all the vinegar.",
       home: "building_edith_cottage", workplace: null,
       anchors: EDITH_ANCHORS, coins: 20, inventory: ["knitting_needles"],
       relationships: {
@@ -631,6 +640,8 @@ const SIM = (() => {
       traits: ["dutiful", "observant", "fair"], pronoun: "he",
       wants: "a quiet, orderly town where nobody locks their doors",
       goal: "catch whoever has been working the market crowds",
+      age: 38, mood: 60,
+      bio: "The town's only constable, a post he took because his late mother believed in order and he believes in her. Fair, patient, and quietly lonely behind the badge — the job keeps everyone at arm's length. Takes his evening bun at Mara's as the one warm ritual of his day. Suspects the fisherman is dirty but won't move without proof, because doing it right matters to him more than being right.",
       isOfficer: true,
       home: "building_station", workplace: null,
       anchors: BRAM_ANCHORS, coins: 18, inventory: ["ledger", "iron_key"],
@@ -649,6 +660,8 @@ const SIM = (() => {
       traits: ["calculating", "charming", "patient"], pronoun: "he",
       wants: "easy coin and no attention",
       goal: "keep the crew fed without the constable ever looking his way",
+      age: 41, mood: 52,
+      bio: "Grew up hungry in a dockside town and swore he'd never be poor or powerless again. Came here years ago, hung a fishing rod on the wall as a cover, and built the Mudlarks out of strays nobody else wanted. Genuinely fond of Ren and Pip in his cold way — they're the closest thing to family he allows himself. Charming, calculating, and always, always watching the constable.",
       gang: true, cred: 3, homeSpot: { x: 33, y: 26 }, riskAppetite: 0.35,
       secret: "he runs the Mudlarks, the town's petty thieving crew; the fishing is a cover",
       home: "building_hideout", workplace: null,
@@ -668,6 +681,8 @@ const SIM = (() => {
       traits: ["restless", "light-fingered", "fiercely loyal"], pronoun: "she",
       wants: "excitement, and Silas's approval",
       goal: "prove she can run a job alone",
+      age: 23, mood: 54,
+      bio: "Orphaned at the market as a girl, taught herself to survive with quick hands and quicker feet. Silas found her lifting apples and gave her a place to belong — she'd burn the town down for him and hates that she would. Restless, proud, and desperate to be seen as more than the leader's shadow. Secretly softening toward Pip, whom she protects like the little brother she never chose.",
       gang: true, cred: 2, homeSpot: { x: 32, y: 26 }, riskAppetite: 0.75,
       secret: "she is the Mudlarks' lieutenant and the best pickpocket in town",
       home: "building_hideout", workplace: null,
@@ -687,6 +702,8 @@ const SIM = (() => {
       traits: ["jumpy", "eager", "soft-hearted"], pronoun: "he",
       wants: "to belong somewhere, and maybe to stop feeling guilty",
       goal: "figure out whether crew life is really for him",
+      age: 16, mood: 48,
+      bio: "The youngest Mudlark, a soft-hearted boy who fell in with the crew because they fed him when no one else would. Runs bread and keeps lookout, and hates the knot in his stomach every time he does. Adores Ren, is scared of Silas, and secretly wishes Mara or Edith would just tell him to come work honest. Too loyal to leave and too gentle to belong.",
       gang: true, cred: 1, homeSpot: { x: 34, y: 26 }, riskAppetite: 0.2,
       secret: "he is the Mudlarks' lookout, and he's not sure his heart is in it",
       home: "building_hideout", workplace: null,
@@ -712,6 +729,8 @@ const SIM = (() => {
       id: def.id, name: def.name, role: def.role,
       traits: def.traits.slice(), pronoun: def.pronoun,
       wants: def.wants, goal: def.goal, secret: def.secret || null,
+      bio: def.bio || "", age: def.age || null,          // who they are (Phase 10)
+      mood: def.mood ?? 55,                               // happiness 0-100 (Phase 10)
       isOfficer: !!def.isOfficer, gang: !!def.gang,
       coins: def.coins ?? 12, // simple economy (Phase 8)
       hunger: def.hunger ?? 25, hungerFlagged: false, // needs (Phase 9)
@@ -726,6 +745,8 @@ const SIM = (() => {
       riskAppetite: def.riskAppetite ?? 0.5, // how boldly a gang member steals
       // business consequences (Phase 7)
       noticedShutDay: 0, consideredTheftDay: 0,
+      // conversation-driven errand override + solo crafting (Phase 10)
+      errand: null, lastCraftDay: 0,
       // memory stream (plan §6 memory schema objects)
       memories: [], perceptionCooldowns: {}, lastActivityKey: null,
       // planning (Phase 3) + reflection (Phase 7)
@@ -786,10 +807,38 @@ const SIM = (() => {
 
   function setLLM(state, fn) { state.llm = fn; }
 
-  // Shared persona block for every prompt: personality, wants, goals —
-  // and secrets/duties, so each character plays their real dynamics.
+  // Mood is a 0-100 contentment dial that every character carries and that
+  // real events (robbed, gifted, arrested, promoted, fed) push around. It
+  // colors how they read the world without scripting what they do.
+  function moodWord(mood) {
+    if (mood >= 85) return "elated";
+    if (mood >= 70) return "content";
+    if (mood >= 55) return "steady";
+    if (mood >= 40) return "unsettled";
+    if (mood >= 25) return "low";
+    return "miserable";
+  }
+  // Shift a character's mood and remember why, clamped to 0-100. Small,
+  // frequent nudges from lived events; a big shift also lays down a memory.
+  function nudgeMood(state, npc, delta, reason) {
+    if (!npc || typeof npc.mood !== "number") return;
+    const before = npc.mood;
+    npc.mood = clamp(npc.mood + delta, 0, 100);
+    if (reason && Math.abs(npc.mood - before) >= 8)
+      addMemory(state, npc, "observation",
+        `${delta >= 0 ? "Felt better" : "Felt worse"}: ${reason}.`,
+        { importance: delta >= 0 ? 4 : 5 });
+  }
+
+  // Shared persona block for every prompt: who this person actually is —
+  // backstory, age, current mood, personality, wants, goals — plus the
+  // secrets/duties that make each character play their real dynamics.
   function personaLines(npc) {
-    let s = `Traits: ${npc.traits.join(", ")}. Wants: ${npc.wants}. Long-term goal: ${npc.goal}.`;
+    let s = "";
+    if (npc.bio) s += `Who you are: ${npc.bio}\n`;
+    if (npc.age) s += `Age ${npc.age}. `;
+    s += `Right now you feel ${moodWord(npc.mood)} (mood ${Math.round(npc.mood)}/100).\n`;
+    s += `Traits: ${npc.traits.join(", ")}. Wants: ${npc.wants}. Long-term goal: ${npc.goal}.`;
     if (npc.gang)
       s += `\nSecret — never reveal it casually: ${npc.secret}. Current standing: ${npc.gangRank} of ${GANG_NAME}. Publicly you are just a ${npc.role}.`;
     if (npc.isOfficer)
@@ -970,7 +1019,10 @@ Available effects (refer to people by name, or "player"):
 {"type":"hire","who":"...","workplace":"bakery","role":"baker's apprentice"} — give someone a real job at the bakery; they'll work the counter and the shop opens because of them
 {"type":"fire","who":"..."} — remove someone's job
 {"type":"memory","who":"...","text":"<something worth remembering>","importance":5}
-{"type":"plan_now","who":"...","reason":"<why they should rethink today's plan>"}`;
+{"type":"plan_now","who":"...","reason":"<why they should rethink today's plan>"}
+{"type":"mood","who":"...","delta":8,"reason":"<what lifted or sank their spirits>"} — delta between -20 and 20; how this moment changed how they feel
+{"type":"go_to","who":"...","place":"park","reason":"<why they head off now>"} — send someone off on an errand right now; place is home|bakery|market|park
+{"type":"report_crime","who":"<a witness>","culprit":"<name>"} — a witness tells the constable what they saw, so the law can act`;
 
   function resolveActor(state, ref) {
     if (typeof ref !== "string") return null;
@@ -1001,8 +1053,8 @@ Available effects (refer to people by name, or "player"):
             if (idx < 0) break; // can't give what you don't carry
             inv.splice(idx, 1);
             actorInv(state, to).push(item);
-            if (to.npc) addMemory(state, to.npc, "observation",
-              `${actorName(who)} gave me ${item.replace(/_/g, " ")}.`);
+            if (to.npc) { addMemory(state, to.npc, "observation",
+              `${actorName(who)} gave me ${item.replace(/_/g, " ")}.`); nudgeMood(state, to.npc, 6); }
             if (who.npc) addMemory(state, who.npc, "observation",
               `Gave my ${item.replace(/_/g, " ")} to ${actorName(to)}.`);
             applied.push(`${item.replace(/_/g, " ")}: ${actorName(who)} → ${actorName(to)}`);
@@ -1089,6 +1141,7 @@ Available effects (refer to people by name, or "player"):
               who.npc.workplace = wp; who.npc.role = role;
               who.npc.needsPlan = true; // rethink the day around the new job
               addMemory(state, who.npc, "reflection", `I've got honest work at the bakery now — ${role}.`, { importance: 8 });
+              nudgeMood(state, who.npc, 10, "landed honest work");
             }
             applied.push(`${actorName(who)} was hired at the bakery as ${role}`);
             break;
@@ -1098,6 +1151,7 @@ Available effects (refer to people by name, or "player"):
             if (who.npc.workplace) {
               who.npc.workplace = null;
               addMemory(state, who.npc, "reflection", "Lost my place at the bakery. Back to figuring things out.", { importance: 8 });
+              nudgeMood(state, who.npc, -12, "lost my job");
               applied.push(`${who.npc.name} lost their job`);
             }
             break;
@@ -1113,6 +1167,45 @@ Available effects (refer to people by name, or "player"):
             if (!who.npc) break;
             who.npc.needsPlan = true;
             applied.push(`${who.npc.name} is rethinking the day`);
+            break;
+          }
+          case "mood": {
+            if (!who.npc) break;
+            const delta = clamp(Number(e.delta) || 0, -20, 20);
+            if (!delta) break;
+            nudgeMood(state, who.npc, delta,
+              typeof e.reason === "string" && e.reason.trim() ? e.reason.trim().slice(0, 60) : null);
+            applied.push(`${who.npc.name} feels ${delta >= 0 ? "brighter" : "worse"} (${moodWord(who.npc.mood)})`);
+            break;
+          }
+          case "go_to": {
+            if (!who.npc || !PLACES.includes(e.place)) break;
+            const label = typeof e.reason === "string" && e.reason.trim()
+              ? e.reason.trim().slice(0, 48) : `heading to the ${e.place}`;
+            who.npc.errand = { place: e.place, until: absMinutes(state.clock) + 180, label };
+            addMemory(state, who.npc, "observation", `Set off for the ${e.place} — ${label}.`, { importance: 3 });
+            applied.push(`${who.npc.name} heads for the ${e.place}`);
+            break;
+          }
+          case "report_crime": {
+            if (!who.npc) break;
+            const culprit = resolveActor(state, e.culprit);
+            const crime = state.crimeLog.find((c) =>
+              !c.reported && c.arrestDay === null &&
+              c.witnesses.includes(who.npc.id) &&
+              (!culprit || !culprit.npc || c.culprit === culprit.npc.id));
+            if (!crime) break;
+            crime.reported = true; crime.reportedDay = state.clock.day;
+            const thief = byId(state, crime.culprit);
+            const victim = byId(state, crime.victim);
+            addMemory(state, who.npc, "dialogue",
+              `Reported it: ${thief.name} took ${victim.name}'s ${crime.loot || "goods"} at the market.`,
+              { importance: 6 });
+            const officer = state.npcs.find((n) => n.isOfficer);
+            if (officer) addMemory(state, officer, "dialogue",
+              `${who.npc.name} named ${thief.name} for the market theft. Time to bring ${thief.pronoun === "he" ? "him" : "her"} in.`,
+              { importance: 9 });
+            applied.push(`${who.npc.name} reported ${thief.name} to the law`);
             break;
           }
         }
@@ -1382,9 +1475,13 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       `Lifted ${victim.name}'s ${loot} in the market crowd. Clean work.`, { importance: 8 });
     addMemory(state, victim, "observation",
       `My ${loot} is gone — someone took it right off me in the market crowd!`, { importance: 8 });
-    for (const w of witnesses)
+    nudgeMood(state, victim, -12, `robbed of my ${loot}`);
+    nudgeMood(state, npc, 4);
+    for (const w of witnesses) {
       addMemory(state, w, "observation",
         `Saw ${npc.name} slip ${victim.name}'s ${loot} away in the market crowd!`, { importance: 9 });
+      nudgeMood(state, w, -5);
+    }
   }
 
   function arrest(state, officer, culprit, crime) {
@@ -1401,6 +1498,8 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     addMemory(state, culprit, "observation",
       `${officer.name} clapped me in the station cell for the ${crime.loot || "market"} job. A full day locked up.`,
       { importance: 9 });
+    nudgeMood(state, culprit, -18, "thrown in the cell");
+    nudgeMood(state, officer, 6);
     for (const o of state.npcs)
       if (o !== officer && o !== culprit && Math.hypot(o.x - culprit.x, o.y - culprit.y) <= 5)
         addMemory(state, o, "observation",
@@ -1449,6 +1548,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     if (crime) crime.releaseDay = state.clock.day;
     addMemory(state, npc, "observation",
       "Out of the cell. A day behind bars, and everyone in town saw the arrest.", { importance: 8 });
+    nudgeMood(state, npc, 7, "free again");
     refreshGangRanks(state, `${npc.name} got out of the cell`);
   }
 
@@ -1497,9 +1597,24 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       return;
     }
 
-    const act = activityAt(npc, state.clock.minutes);
+    let act = activityAt(npc, state.clock.minutes);
+    // An errand (from a conversation "go_to") temporarily overrides the plan:
+    // the character drops what they were doing and heads there until they
+    // arrive or the errand times out.
+    if (npc.errand) {
+      const loc = npc.locations[npc.errand.place] || npc.locations.home;
+      const arrived = Math.hypot(npc.x - loc.x, npc.y - loc.y) < 1.2;
+      if (arrived || absMinutes(state.clock) >= npc.errand.until) {
+        if (arrived) addMemory(state, npc, "observation",
+          `Got to the ${npc.errand.place}.`, { importance: 2 });
+        npc.errand = null;
+      } else {
+        act = { activity: "errand", place: npc.errand.place, label: npc.errand.label };
+      }
+    }
     npc.activity = act;
     perceive(state, npc);
+    maybeCraft(state, npc);
     if (npc.gang) maybeCommitTheft(state, npc);
     if (npc.isOfficer) updateLaw(state, npc);
 
@@ -1672,7 +1787,36 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       addMemory(state, npc, "observation",
         "I'm famished and have no bread — I need to get to the bakery before I'm no use to anyone.",
         { importance: 7 });
+      nudgeMood(state, npc, -8, "famished with no bread");
     }
+  }
+
+  // Idle hands make things (Phase 10): while a character lingers somewhere
+  // with time on their hands, their plan's activity id occasionally yields a
+  // physical good they can later carry, gift or trade — a purely solo action
+  // that nobody scripted, gated so it stays rare and legible.
+  const SOLO_CRAFT = {
+    fish: { item: "fish", place: "park", verb: "landed a fish by the water" },
+    forage: { item: "wild_herbs", place: "park", verb: "gathered a handful of wild herbs" },
+    knit: { item: "wool_scarf", place: null, verb: "finished knitting a wool scarf" },
+    whittle: { item: "wood_carving", place: "home", verb: "whittled a little wooden figure" },
+    garden: { item: "flowers", place: "home", verb: "cut some flowers from the garden" },
+    sketch: { item: "sketch", place: "park", verb: "finished a small sketch of the square" },
+  };
+  function maybeCraft(state, npc) {
+    if (npc.jailedUntil || npc.talking) return;
+    const key = (npc.activity && npc.activity.activity) || "";
+    const craft = SOLO_CRAFT[key];
+    if (!craft) return;
+    if (craft.place && npc.activity.place !== craft.place) return;
+    if (npc.lastCraftDay === state.clock.day) return; // at most one made thing per day
+    // Deterministic (no shared-RNG draw, so the seeded crime/economy stream
+    // stays reproducible): spend real time at a craft and you produce the
+    // good once for the day.
+    npc.lastCraftDay = state.clock.day;
+    npc.inventory.push(craft.item);
+    nudgeMood(state, npc, 5);
+    addMemory(state, npc, "observation", `${craft.verb[0].toUpperCase()}${craft.verb.slice(1)}.`, { importance: 3 });
   }
 
   function tick(state, dtReal) {
@@ -1707,6 +1851,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     buildReflectionPrompt, generateReflection, bakeryOnDuty, bakeryStaff,
     REFLECTION_THRESHOLD, BREAD_PRICE, updateHunger, spreadRumor,
     HUNGER_EAT_AT, HUNGER_STARVING, HUNGER_RATE,
+    moodWord, nudgeMood, maybeCraft, personaLines, updateNPC,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -1756,6 +1901,7 @@ if (typeof module !== "undefined") module.exports = SIM;
           lastTheftDay: n.lastTheftDay, lastReleaseDay: n.lastReleaseDay,
           role: n.role, goal: n.goal, gang: n.gang, isOfficer: n.isOfficer,
           coins: n.coins, workplace: n.workplace, hunger: n.hunger,
+          mood: n.mood, errand: n.errand, lastCraftDay: n.lastCraftDay,
           importanceSinceReflection: n.importanceSinceReflection,
           lastReflectionDay: n.lastReflectionDay, relationships2: undefined,
           memories: n.memories.map((m) =>
@@ -1763,7 +1909,7 @@ if (typeof module !== "undefined") module.exports = SIM;
         };
       }
       localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 9, clock: state.clock, memCounter: state.memCounter, seed: state.seed,
+        v: 10, clock: state.clock, memCounter: state.memCounter, seed: state.seed,
         player: { x: state.player.x, y: state.player.y,
                   role: state.player.role, faction: state.player.faction,
                   inventory: state.player.inventory,
@@ -1780,7 +1926,7 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 9) return; // older saves start fresh
+      if (s.v !== 10) return; // older saves start fresh
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
       if (s.player.role) state.player.role = s.player.role;
@@ -1816,6 +1962,9 @@ if (typeof module !== "undefined") module.exports = SIM;
         if (d.coins !== undefined) n.coins = d.coins;
         if (d.workplace !== undefined) n.workplace = d.workplace;
         if (d.hunger !== undefined) n.hunger = d.hunger;
+        if (d.mood !== undefined) n.mood = d.mood;
+        if (d.errand !== undefined) n.errand = d.errand;
+        if (d.lastCraftDay !== undefined) n.lastCraftDay = d.lastCraftDay;
         if (d.importanceSinceReflection) n.importanceSinceReflection = d.importanceSinceReflection;
         if (d.lastReflectionDay) n.lastReflectionDay = d.lastReflectionDay;
         n.memories = d.memories.map((m) =>
@@ -2251,10 +2400,17 @@ if (typeof module !== "undefined") module.exports = SIM;
       tabsEl.children[i].style.background = i === selNpcIdx ? "#5a4a8c" : "#3a2f5c";
     const loaves = npc.inventory.filter((i) => i === "bread_loaf").length;
     const hungerTag = npc.hunger >= SIM.HUNGER_STARVING ? "famished" : npc.hunger >= SIM.HUNGER_EAT_AT ? "hungry" : "fed";
+    const moodTag = SIM.moodWord(npc.mood);
     document.getElementById("planview").innerHTML =
-      `<b>${esc(npc.name)}'s plan</b> <span class="meta">(${state.llm && npc.lastPlanDay === state.clock.day && npc.memories.some((m) => m.type === "plan") ? "self-chosen (Fable 5)" : "fallback rhythm"})</span><br>` +
-      `<span class="meta">${npc.coins}¢ · ${hungerTag} (${Math.round(npc.hunger)}/100) · ${loaves} loaf${loaves === 1 ? "" : "s"}` +
-      `${npc.workplace ? " · bakery staff" : ""}${npc.gang ? ` · Mudlark ${npc.gangRank}` : ""}</span><br>` +
+      `<b>${esc(npc.name)}</b> <span class="meta">— ${esc(npc.role)}${npc.age ? `, ${npc.age}` : ""}</span><br>` +
+      (npc.bio ? `<span class="meta bio">${esc(npc.bio)}</span><br>` : "") +
+      `<span class="meta">Traits: ${esc(npc.traits.join(", "))}</span><br>` +
+      `<span class="meta">Wants: ${esc(npc.wants)}</span><br>` +
+      `<span class="meta">Goal: ${esc(npc.goal)}</span><br>` +
+      `<span class="meta">Mood: ${moodTag} (${Math.round(npc.mood)}/100) · ${npc.coins}¢ · ${hungerTag} (${Math.round(npc.hunger)}/100) · ${loaves} loaf${loaves === 1 ? "" : "s"}` +
+      `${npc.workplace ? " · bakery staff" : ""}${npc.gang ? ` · Mudlark ${npc.gangRank}` : ""}${npc.isOfficer ? " · constable" : ""}</span>` +
+      `${npc.inventory.length ? `<br><span class="meta">Carrying: ${esc(npc.inventory.map((i) => i.replace(/_/g, " ")).join(", "))}</span>` : ""}` +
+      `<hr style="border:0;border-top:1px solid #3a2f5c;margin:5px 0"><b>Today</b> <span class="meta">(${state.llm && npc.lastPlanDay === state.clock.day && npc.memories.some((m) => m.type === "plan") ? "self-chosen (Fable 5)" : "fallback rhythm"})</span><br>` +
       npc.current_plan.map(([t, , , label]) => `<span class="meta">${t}</span> ${esc(label)}`).join("<br>");
     const lr = document.getElementById("lastretrieval");
     if (lastRetrieval) {

@@ -622,5 +622,106 @@ const CUSTOM = [
   check("re-raised next morning", npc.needsPlan === true);
 }
 
+// ---- Phase 10: identity (mood) + new actions -------------------------------
+{
+  // every character loads with a full identity: bio, age, mood
+  const st = SIM.createState();
+  check("all NPCs have a bio", st.npcs.every((n) => typeof n.bio === "string" && n.bio.length > 40));
+  check("all NPCs have an age", st.npcs.every((n) => Number.isFinite(n.age) && n.age > 0));
+  check("all NPCs have a mood 0-100", st.npcs.every((n) => n.mood >= 0 && n.mood <= 100));
+  // the persona block a prompt sees carries identity, not just traits
+  const bram = st.npcs.find((n) => n.id === "npc_bram");
+  const persona = SIM.personaLines(bram);
+  check("persona includes backstory", persona.includes("constable") && persona.includes("Who you are"));
+  check("persona names the current mood", /mood \d+\/100/.test(persona));
+  check("moodWord maps the dial", SIM.moodWord(90) === "elated" && SIM.moodWord(10) === "miserable");
+}
+{
+  // mood effect nudges a participant and clamps; a big swing lays a memory
+  const st = SIM.createState();
+  const mara = st.npcs.find((n) => n.id === "npc_mara");
+  const before = mara.mood;
+  let applied = SIM.applyEffects(st, [{ type: "mood", who: "Mara", delta: 15, reason: "a kind word from a stranger" }],
+    new Set(["npc_mara", "player"]));
+  check("mood effect applies", applied.length === 1 && mara.mood === before + 15);
+  check("big mood swing is remembered", mara.memories.some((m) => m.text.includes("Felt better")));
+  // clamp at 100 and reject non-participants
+  SIM.applyEffects(st, [{ type: "mood", who: "Mara", delta: 20 }], new Set(["npc_mara"]));
+  SIM.applyEffects(st, [{ type: "mood", who: "Mara", delta: 20 }], new Set(["npc_mara"]));
+  check("mood clamps at 100", mara.mood === 100);
+  const edith = st.npcs.find((n) => n.id === "npc_edith");
+  const em = edith.mood;
+  SIM.applyEffects(st, [{ type: "mood", who: "Edith", delta: -10 }], new Set(["npc_mara"]));
+  check("mood can't touch non-participants", edith.mood === em);
+}
+{
+  // go_to effect sends someone off on an errand that overrides the plan
+  const st = SIM.createState();
+  const pip = st.npcs.find((n) => n.id === "npc_pip");
+  const applied = SIM.applyEffects(st, [{ type: "go_to", who: "Pip", place: "park", reason: "cool off by the pond" }],
+    new Set(["npc_pip", "player"]));
+  check("go_to sets an errand", applied.length === 1 && pip.errand && pip.errand.place === "park");
+  check("errand is remembered", pip.memories.some((m) => m.text.includes("Set off for the park")));
+  // updateNPC honors the errand: activity becomes the errand, heading to the park
+  SIM.updateNPC(st, pip, 0.1);
+  check("errand overrides the planned activity", pip.activity.place === "park");
+  // arriving clears the errand
+  const loc = pip.locations.park;
+  pip.x = loc.x; pip.y = loc.y;
+  SIM.updateNPC(st, pip, 0.1);
+  check("errand clears on arrival", pip.errand === null);
+  // a bad place is rejected
+  check("go_to rejects unknown places",
+    SIM.applyEffects(st, [{ type: "go_to", who: "Pip", place: "moon" }], new Set(["npc_pip"])).length === 0);
+}
+{
+  // report_crime: a witness names a thief to the law, feeding the arrest chain
+  const st = SIM.createState();
+  const ren = st.npcs.find((n) => n.id === "npc_ren");
+  const edith = st.npcs.find((n) => n.id === "npc_edith");
+  const bram = st.npcs.find((n) => n.id === "npc_bram");
+  st.crimeLog.push({
+    id: "crime_1", day: 1, ts: 100, culprit: ren.id, victim: edith.id,
+    witnesses: [edith.id], loot: "coin purse",
+    reported: false, reportedDay: null, arrestDay: null, releaseDay: null,
+  });
+  const applied = SIM.applyEffects(st, [{ type: "report_crime", who: "Edith", culprit: "Ren" }],
+    new Set(["npc_edith", "player"]));
+  check("report_crime marks the crime reported", applied.length === 1 && st.crimeLog[0].reported === true);
+  check("the constable learns who to bring in",
+    bram.memories.some((m) => m.text.includes("Ren") && m.importance === 9));
+  // a non-witness can't report what they didn't see
+  st.crimeLog.push({
+    id: "crime_2", day: 1, ts: 200, culprit: ren.id, victim: edith.id,
+    witnesses: [edith.id], loot: "loaf",
+    reported: false, reportedDay: null, arrestDay: null, releaseDay: null,
+  });
+  const mara = st.npcs.find((n) => n.id === "npc_mara");
+  check("non-witness can't report",
+    SIM.applyEffects(st, [{ type: "report_crime", who: "Mara" }], new Set(["npc_mara"])).length === 0
+      && st.crimeLog[1].reported === false);
+}
+{
+  // solo crafting: time spent at a craft activity yields a physical good once/day
+  const st = SIM.createState();
+  const silas = st.npcs.find((n) => n.id === "npc_silas");
+  silas.activity = { activity: "fish", place: "park", label: "fishing at the pond" };
+  const invBefore = silas.inventory.length;
+  SIM.maybeCraft(st, silas);
+  check("fishing yields a fish", silas.inventory.includes("fish") && silas.inventory.length === invBefore + 1);
+  check("crafting is remembered", silas.memories.some((m) => m.text.includes("fish")));
+  // only one made thing per day
+  SIM.maybeCraft(st, silas);
+  check("craft capped once per day", silas.inventory.filter((i) => i === "fish").length === 1);
+  // crafting draws no shared RNG (keeps the seeded world reproducible)
+  const st2 = SIM.createState(777);
+  const before = st2.rng();
+  const st3 = SIM.createState(777);
+  const edith = st3.npcs.find((n) => n.id === "npc_edith");
+  edith.activity = { activity: "knit", place: "park", label: "knitting" };
+  SIM.maybeCraft(st3, edith);
+  check("craft doesn't perturb the RNG stream", st3.rng() === before);
+}
+
 if (failures) { console.error(`${failures} failure(s)`); process.exit(1); }
 console.log("OK: all planning/dialogue checks passed");
