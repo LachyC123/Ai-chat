@@ -96,13 +96,27 @@ deterministic); different seeds tell different stories.
 
 Every dialogue turn — yours or NPC-to-NPC — returns `{line, effects}`. The
 model decides *what happens*; a small interpreter is only the physics. The
-effect vocabulary: give/take items, set roles (get hired as the constable's
-deputy — for real), join or leave factions (police / the Mudlarks), shift
-opinions, rewrite long-term goals, plant memories, trigger re-plans. A player
-sworn into the police mechanically suppresses street crime nearby; an NPC who
-quits the gang mid-conversation reshuffles the hierarchy on the spot. Invalid
-or over-reaching effects are dropped silently — the sim never breaks on a
-malformed response.
+effect vocabulary: give/take items, **pay coins**, **hire/fire** (a real job
+at the bakery), set roles (get sworn in as the constable's deputy), join or
+leave factions (police / the Mudlarks), shift opinions, rewrite long-term
+goals, plant memories, trigger re-plans. A player sworn into the police
+suppresses street crime nearby; an NPC who quits the gang reshuffles the
+hierarchy on the spot. Invalid or over-reaching effects are dropped silently —
+the sim never breaks on a malformed response.
+
+### A coin economy, and jobs that are real
+
+Everyone carries coins (the bakers richer, the gang broke). Bread costs 2
+coins and the coin actually moves from customer to baker; a stolen coin purse
+transfers real money from the victim; the `pay` effect settles debts and
+bribes. Coins are conserved town-wide — nothing is minted, only moved.
+
+Employment is not cosmetic. `hire` makes someone **actual bakery staff**: they
+work the counter, and the shop is *open because of them*. Hire the player and
+you can run the counter yourself and take the coin — even keep the shop open
+after Mara's arrested. Hire Pip and he leaves the gang for honest work (which
+reshuffles the crew) and re-plans his day around the job. It's the loop that
+closes "hire the player as staff who actually mans the counter."
 
 ### Physical items
 
@@ -190,8 +204,12 @@ calls (never per-tick), `fable5` still zero (instrumented via
       operates when staff are present, so an arrest or a day off shuts the shop and
       customers react with the reason); seeded randomness (per-run luck, gang risk
       appetite, varied loot) so stories diverge run to run.
-- [ ] **8. World fill** — remaining buildings, items, shop hours, pathfinding polish,
-      more cast and places, wider effect vocabulary.
+- [x] **8. Economy & employment** — coins on everyone (conserved town-wide), real coin
+      transfer on bread sales / theft / the new `pay` effect; `hire`/`fire` that makes
+      someone actual bakery staff (a hired player runs the counter and keeps the shop
+      open; a hired NPC leaves the gang and re-plans around the job).
+- [ ] **9. World fill** — more runnable businesses, shop hours, pathfinding polish,
+      more cast and places, still-wider effect vocabulary.
 - [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
 
 ## Architecture notes (Phase 1)

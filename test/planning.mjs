@@ -254,6 +254,61 @@ const CUSTOM = [
   check("sleepers don't start conversations", SIM.findConvoPair(st) === null);
 }
 
+// ---- Economy + employment effects (Phase 8) --------------------------------
+{
+  const st = SIM.createState(1);
+  const mara = st.npcs.find((n) => n.id === "npc_mara");
+  const bram = st.npcs.find((n) => n.id === "npc_bram");
+
+  // pay: coins move, both remember, overpay refused, non-participant blocked
+  const p0 = st.player.coins, b0 = bram.coins;
+  let applied = SIM.applyEffects(st, [{ type: "pay", from: "player", to: "Bram", coins: 5 }],
+    new Set(["player", "npc_bram"]));
+  check("pay moves coins", st.player.coins === p0 - 5 && bram.coins === b0 + 5 && applied.length === 1);
+  check("payee remembers the coins", bram.memories.some((m) => m.text.includes("paid me 5 coins")));
+  applied = SIM.applyEffects(st, [{ type: "pay", from: "player", to: "Bram", coins: 99999 }],
+    new Set(["player", "npc_bram"]));
+  check("can't pay coins you don't have", applied.length === 0 && st.player.coins === p0 - 5);
+  applied = SIM.applyEffects(st, [{ type: "pay", from: "player", to: "Bram", coins: 3 }],
+    new Set(["player"])); // Bram not a participant
+  check("pay blocked when payee isn't in the conversation", applied.length === 0);
+
+  // hire the player: real bakery staff, mans the counter, shop opens for them
+  applied = SIM.applyEffects(st, [{ type: "hire", who: "player", workplace: "bakery", role: "apprentice baker" }],
+    new Set(["npc_mara", "player"]));
+  check("player is hired at the bakery", st.player.workplace === SIM.BUILDINGS[0].id && st.player.role === "apprentice baker");
+  check("hire is surfaced", applied.some((a) => a.includes("hired at the bakery")));
+  st.player.x = 10; st.player.y = 7; st.clock.minutes = SIM.hm("09:00");
+  check("a hired player standing inside runs the counter", SIM.bakeryOnDuty(st) === st.player);
+  applied = SIM.applyEffects(st, [{ type: "fire", who: "player" }], new Set(["npc_mara", "player"]));
+  check("player can be fired", st.player.workplace === null);
+}
+{
+  // hiring an NPC pulls them out of the gang and reshuffles the crew
+  const st = SIM.createState(1);
+  const pip = st.npcs.find((n) => n.id === "npc_pip");
+  check("Pip starts as a gang member", pip.gang === true && pip.gangRank === "lookout");
+  SIM.applyEffects(st, [{ type: "hire", who: "Pip", workplace: "the bakery", role: "delivery boy" }],
+    new Set(["npc_mara", "npc_pip"]));
+  check("hired NPC gets the job", pip.workplace === SIM.BUILDINGS[0].id && pip.role === "delivery boy");
+  check("taking honest work leaves the gang", pip.gang === false);
+  check("hire re-plans the NPC around the job", pip.needsPlan === true);
+  check("leaving the crew is a reflection", pip.memories.some((m) => m.type === "reflection" && m.text.includes("honest work")));
+  check("ex-member no longer counts as crew", !st.npcs.filter((n) => n.gang).includes(pip));
+}
+{
+  // coins actually move through bread sales over simulated days
+  const st = SIM.createState(1);
+  const mara = st.npcs.find((n) => n.id === "npc_mara");
+  const m0 = mara.coins;
+  for (let i = 0; i < Math.ceil((3 * SIM.DAY_REAL_SECONDS) / 0.1); i++) SIM.tick(st, 0.1);
+  const sales = mara.memories.filter((m) => m.text.startsWith("Sold a fresh loaf")).length;
+  check("the bakery takes in coin from sales", sales > 0 && mara.coins >= m0 + sales * SIM.BREAD_PRICE - 100);
+  check("a coin-purse theft transfers coins",
+    st.crimeLog.some((c) => c.loot === "coin purse") ?
+      st.npcs.some((n) => n.memories.some((m) => m.text.includes("coins in it"))) : true);
+}
+
 // ---- Dialogue effects engine (Phase 6): conversations change the world ------
 {
   // parseDialogueResponse: JSON, wrapped JSON, plain-text fallback

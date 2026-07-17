@@ -456,8 +456,12 @@ const SIM = (() => {
   // "each action impacts another"): if the staff are arrested, or simply
   // chose a day at the park, the shop is DARK — and everyone who came for
   // bread finds out and reacts.
+  const BREAD_PRICE = 2; // coins
+  // Staff = anyone employed at the bakery (NPCs *or* a hired player).
   function bakeryStaff(state) {
-    return state.npcs.filter((o) => o.workplace === BUILDINGS[0].id && !o.jailedUntil);
+    const list = state.npcs.filter((o) => o.workplace === BUILDINGS[0].id && !o.jailedUntil);
+    if (state.player.workplace === BUILDINGS[0].id) list.push(state.player);
+    return list;
   }
   function bakeryOnDuty(state) {
     if (!isOpen(BUILDINGS[0], state.clock.minutes)) return null;
@@ -465,11 +469,12 @@ const SIM = (() => {
     return bakeryStaff(state).find((o) => insideBuilding(BUILDINGS[0], o.x, o.y)) || null;
   }
 
-  // Non-staff visitors buy bread when a worker is on duty (once per day),
-  // otherwise they notice the shop is shut and wonder why (a real
-  // consequence memory that can bend their day).
+  // Non-staff visitors buy bread when a worker is on duty (once per day)
+  // and can afford it; the coin actually moves. Otherwise they notice the
+  // shop is shut and wonder why (a consequence memory that bends their day).
   function maybeBuyBread(state, npc) {
     if (npc.lastPurchaseDay === state.clock.day || npc.noticedShutDay === state.clock.day) return;
+    if (npc.workplace === BUILDINGS[0].id) return; // staff don't queue as customers
     const spot = npc.locations.bakery;
     if (Math.hypot(npc.x - spot.x, npc.y - spot.y) > 0.6) return;
     const worker = bakeryOnDuty(state);
@@ -485,11 +490,21 @@ const SIM = (() => {
         `Went for my bread but the bakery was shut ${why}.`, { importance: 6 });
       return;
     }
+    if ((npc.coins || 0) < BREAD_PRICE) {
+      npc.noticedShutDay = state.clock.day; // don't retry all day
+      addMemory(state, npc, "observation",
+        `Wanted a loaf but I couldn't spare the ${BREAD_PRICE} coins today. Went without.`, { importance: 5 });
+      return;
+    }
     npc.lastPurchaseDay = state.clock.day;
+    npc.coins -= BREAD_PRICE;
+    worker.coins = (worker.coins || 0) + BREAD_PRICE;
     takeWorldItem(state, 10, 8, 3); // a loaf leaves the counter if one's there
     npc.inventory.push("bread_loaf");
-    addMemory(state, npc, "observation", `Bought a fresh loaf from ${worker.name} at the bakery.`);
-    addMemory(state, worker, "observation", `Sold a fresh loaf to ${npc.name}.`);
+    const wname = worker === state.player ? "you" : worker.name;
+    addMemory(state, npc, "observation", `Bought a fresh loaf from ${wname} at the bakery for ${BREAD_PRICE} coins.`);
+    if (worker !== state.player)
+      addMemory(state, worker, "observation", `Sold a fresh loaf to ${npc.name} for ${BREAD_PRICE} coins.`);
   }
 
   // ---- The cast (per-NPC sheets, plan §5-6) ----------------------------
@@ -566,7 +581,7 @@ const SIM = (() => {
       wants: "the bakery bustling and the town's gossip flowing through her shop",
       goal: "make the bakery the beating heart of the town",
       home: "building_bakery_house", workplace: "building_bakery", stationOffset: 0,
-      anchors: MARA_ANCHORS, inventory: ["bread_loaf", "bread_loaf", "spare_key"],
+      anchors: MARA_ANCHORS, coins: 30, inventory: ["bread_loaf", "bread_loaf", "spare_key"],
       relationships: {
         npc_tomas: { affinity: 0.6, summary: "Trusts him since he fixed her oven; a good hire." },
         npc_edith: { affinity: 0.4, summary: "A dependable regular with strong opinions about rye." },
@@ -582,7 +597,7 @@ const SIM = (() => {
       wants: "steady work and no trouble",
       goal: "save enough to open his own workshop one day",
       home: "building_tomas_house", workplace: "building_bakery", stationOffset: 1,
-      anchors: TOMAS_ANCHORS, inventory: ["toolbox"],
+      anchors: TOMAS_ANCHORS, coins: 14, inventory: ["toolbox"],
       relationships: {
         npc_mara:  { affinity: 0.7, summary: "She gave him work when nobody else would." },
         npc_edith: { affinity: 0.3, summary: "Sweet old lady; always asks after his mother." },
@@ -598,7 +613,7 @@ const SIM = (() => {
       wants: "company, fresh bread, and to feel useful",
       goal: "teach somebody to sew properly before her hands give out",
       home: "building_edith_cottage", workplace: null,
-      anchors: EDITH_ANCHORS, inventory: ["knitting_needles"],
+      anchors: EDITH_ANCHORS, coins: 20, inventory: ["knitting_needles"],
       relationships: {
         npc_mara:  { affinity: 0.6, summary: "Buys a seeded loaf most mornings; likes her gossip." },
         npc_tomas: { affinity: 0.3, summary: "A polite boy who carries her basket sometimes." },
@@ -616,7 +631,7 @@ const SIM = (() => {
       goal: "catch whoever has been working the market crowds",
       isOfficer: true,
       home: "building_station", workplace: null,
-      anchors: BRAM_ANCHORS, inventory: ["ledger", "iron_key"],
+      anchors: BRAM_ANCHORS, coins: 18, inventory: ["ledger", "iron_key"],
       relationships: {
         npc_mara:  { affinity: 0.5, summary: "Her evening bun is the best part of the rounds." },
         npc_tomas: { affinity: 0.4, summary: "Honest worker. Notices things, too." },
@@ -635,7 +650,7 @@ const SIM = (() => {
       gang: true, cred: 3, homeSpot: { x: 33, y: 26 }, riskAppetite: 0.35,
       secret: "he runs the Mudlarks, the town's petty thieving crew; the fishing is a cover",
       home: "building_hideout", workplace: null,
-      anchors: SILAS_ANCHORS, inventory: ["fishing_rod", "lockpicks"],
+      anchors: SILAS_ANCHORS, coins: 8, inventory: ["fishing_rod", "lockpicks"],
       relationships: {
         npc_ren:   { affinity: 0.6, summary: "His best hands. Too hungry for her own good." },
         npc_pip:   { affinity: 0.4, summary: "Soft, but loyal. Needs watching, not scolding." },
@@ -654,7 +669,7 @@ const SIM = (() => {
       gang: true, cred: 2, homeSpot: { x: 32, y: 26 }, riskAppetite: 0.75,
       secret: "she is the Mudlarks' lieutenant and the best pickpocket in town",
       home: "building_hideout", workplace: null,
-      anchors: REN_ANCHORS, inventory: ["dice"],
+      anchors: REN_ANCHORS, coins: 5, inventory: ["dice"],
       relationships: {
         npc_silas: { affinity: 0.7, summary: "He took her in. She'd walk into fire for him." },
         npc_pip:   { affinity: 0.5, summary: "Little brother she never asked for." },
@@ -673,7 +688,7 @@ const SIM = (() => {
       gang: true, cred: 1, homeSpot: { x: 34, y: 26 }, riskAppetite: 0.2,
       secret: "he is the Mudlarks' lookout, and he's not sure his heart is in it",
       home: "building_hideout", workplace: null,
-      anchors: PIP_ANCHORS, inventory: ["slingshot"],
+      anchors: PIP_ANCHORS, coins: 3, inventory: ["slingshot"],
       relationships: {
         npc_silas: { affinity: 0.5, summary: "The closest thing to family. Scary, sometimes." },
         npc_ren:   { affinity: 0.6, summary: "She looks out for him. He'd never admit needing it." },
@@ -696,6 +711,7 @@ const SIM = (() => {
       traits: def.traits.slice(), pronoun: def.pronoun,
       wants: def.wants, goal: def.goal, secret: def.secret || null,
       isOfficer: !!def.isOfficer, gang: !!def.gang,
+      coins: def.coins ?? 12, // simple economy (Phase 8)
       home: def.home, workplace: def.workplace,
       schedule_anchors: def.anchors.map(([t, a]) => [t, a]),
       defaultAnchors: def.anchors,
@@ -935,6 +951,9 @@ Available effects (refer to people by name, or "player"):
 {"type":"leave_faction","who":"..."}
 {"type":"affinity","who":"...","toward":"...","delta":0.2,"summary":"<new one-line opinion>"} — delta between -0.3 and 0.3
 {"type":"goal","who":"...","goal":"<new long-term goal>"}
+{"type":"pay","from":"...","to":"...","coins":5} — transfer coins the payer actually has
+{"type":"hire","who":"...","workplace":"bakery","role":"baker's apprentice"} — give someone a real job at the bakery; they'll work the counter and the shop opens because of them
+{"type":"fire","who":"..."} — remove someone's job
 {"type":"memory","who":"...","text":"<something worth remembering>","importance":5}
 {"type":"plan_now","who":"...","reason":"<why they should rethink today's plan>"}`;
 
@@ -1030,6 +1049,44 @@ Available effects (refer to people by name, or "player"):
             applied.push(`${who.npc.name} has a new goal: ${who.npc.goal}`);
             break;
           }
+          case "pay": {
+            const to = resolveActor(state, e.to);
+            if (!to || !allowedIds.has(actorId(to))) break;
+            const payer = who.player ? state.player : who.npc;
+            const payee = to.player ? state.player : to.npc;
+            const amt = Math.max(0, Math.floor(Number(e.coins) || 0));
+            if (amt <= 0 || (payer.coins || 0) < amt) break; // can't pay what you don't have
+            payer.coins -= amt; payee.coins = (payee.coins || 0) + amt;
+            if (who.npc) addMemory(state, who.npc, "observation", `Paid ${amt} coins to ${actorName(to)}.`);
+            if (to.npc) addMemory(state, to.npc, "observation", `${actorName(who)} paid me ${amt} coins.`);
+            applied.push(`${amt} coins: ${actorName(who)} → ${actorName(to)}`);
+            break;
+          }
+          case "hire": {
+            // Only the bakery is a runnable business for now.
+            const wp = (e.workplace || "").toLowerCase().includes("baker") ? BUILDINGS[0].id : null;
+            if (!wp) break;
+            const role = (typeof e.role === "string" && e.role.trim()) ? e.role.trim().slice(0, 48) : "baker's apprentice";
+            if (who.player) { state.player.workplace = wp; state.player.role = role; }
+            else {
+              // leaving the crew for honest work quietly reshuffles the gang
+              if (who.npc.gang) { who.npc.gang = false; refreshGangRanks(state, `${who.npc.name} took a job`); }
+              who.npc.workplace = wp; who.npc.role = role;
+              who.npc.needsPlan = true; // rethink the day around the new job
+              addMemory(state, who.npc, "reflection", `I've got honest work at the bakery now — ${role}.`, { importance: 8 });
+            }
+            applied.push(`${actorName(who)} was hired at the bakery as ${role}`);
+            break;
+          }
+          case "fire": {
+            if (who.player) { if (state.player.workplace) { state.player.workplace = null; applied.push("the player lost their job"); } break; }
+            if (who.npc.workplace) {
+              who.npc.workplace = null;
+              addMemory(state, who.npc, "reflection", "Lost my place at the bakery. Back to figuring things out.", { importance: 8 });
+              applied.push(`${who.npc.name} lost their job`);
+            }
+            break;
+          }
           case "memory": {
             if (!who.npc || typeof e.text !== "string" || !e.text.trim()) break;
             addMemory(state, who.npc, "observation", e.text.trim().slice(0, 140),
@@ -1065,7 +1122,8 @@ Available effects (refer to people by name, or "player"):
 
   function playerSheet(state) {
     const p = state.player;
-    return `The player is a ${p.role}${p.faction ? `, sworn to the ${p.faction === "police" ? "police" : GANG_NAME}` : ""}${p.inventory.length ? `, carrying ${p.inventory.map((i) => i.replace(/_/g, " ")).join(", ")}` : ""}.`;
+    const job = p.workplace === BUILDINGS[0].id ? ", works at the bakery" : "";
+    return `The player is a ${p.role}${p.faction ? `, sworn to the ${p.faction === "police" ? "police" : GANG_NAME}` : ""}${job}, has ${p.coins} coins${p.inventory.length ? `, carrying ${p.inventory.map((i) => i.replace(/_/g, " ")).join(", ")}` : ""}.`;
   }
 
   function buildDialoguePrompt(state, npc, retrieved, turns, playerText) {
@@ -1082,7 +1140,7 @@ ${EFFECTS_SPEC}`;
     const prompt =
 `Time: day ${state.clock.day}, ${fmtClock(state.clock.minutes)} — you are ${npc.stationLabel || npc.activity.label}.
 ${playerSheet(state)}
-You carry: ${npc.inventory.map((i) => i.replace(/_/g, " ")).join(", ") || "nothing"}.
+You have ${npc.coins} coins and carry: ${npc.inventory.map((i) => i.replace(/_/g, " ")).join(", ") || "nothing"}.
 Your relevant memories:
 ${mems}
 Relationship with the player: affinity ${rel.affinity} — ${rel.summary}
@@ -1155,7 +1213,7 @@ ${EFFECTS_SPEC}`;
     const prompt =
 `Time: day ${state.clock.day}, ${fmtClock(state.clock.minutes)} — you are ${speaker.stationLabel || speaker.activity.label}.
 You're chatting with ${listener.name}, the ${listener.role}.
-You carry: ${speaker.inventory.map((i) => i.replace(/_/g, " ")).join(", ") || "nothing"}.
+You have ${speaker.coins} coins and carry: ${speaker.inventory.map((i) => i.replace(/_/g, " ")).join(", ") || "nothing"}.
 Your relevant memories:
 ${mems}
 Your relationship with ${listener.name}: affinity ${rel.affinity} — ${rel.summary}
@@ -1271,6 +1329,13 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     // The victim loses the actual item if they had it
     const vIdx = victim.inventory.indexOf(lootItem);
     if (vIdx >= 0) victim.inventory.splice(vIdx, 1);
+    // A coin purse holds actual coins — real economic damage.
+    if (loot === "coin purse") {
+      const taken = Math.min(victim.coins || 0, 4 + Math.floor(state.rng() * 6));
+      victim.coins = (victim.coins || 0) - taken;
+      npc.coins = (npc.coins || 0) + taken;
+      if (taken > 0) addMemory(state, npc, "observation", `The purse had ${taken} coins in it. Not a bad morning.`);
+    }
     addMemory(state, npc, "observation",
       `Lifted ${victim.name}'s ${loot} in the market crowd. Clean work.`, { importance: 8 });
     addMemory(state, victim, "observation",
@@ -1477,7 +1542,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       clock: { day: 1, minutes: hm("06:50") },
       timeScale: 1,
       player: { x: 19, y: 20, dir: "down", moving: false, speed: 4.2,
-                role: "newcomer", faction: null, inventory: [] },
+                role: "newcomer", faction: null, inventory: [], coins: 15, workplace: null },
       npcs: NPC_DEFS.map(createNPC),
       // Physical items lying in the world (Phase 6)
       worldItems: [], itemCounter: 1,
@@ -1565,7 +1630,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     spawnItem, takeWorldItem, pickupNearestItem, bakeryBreadCount,
     parseDialogueResponse, applyEffects, playerSheet,
     buildReflectionPrompt, generateReflection, bakeryOnDuty, bakeryStaff,
-    REFLECTION_THRESHOLD,
+    REFLECTION_THRESHOLD, BREAD_PRICE,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -1614,6 +1679,7 @@ if (typeof module !== "undefined") module.exports = SIM;
           cred: n.cred, gangRank: n.gangRank, jailedUntil: n.jailedUntil,
           lastTheftDay: n.lastTheftDay, lastReleaseDay: n.lastReleaseDay,
           role: n.role, goal: n.goal, gang: n.gang, isOfficer: n.isOfficer,
+          coins: n.coins, workplace: n.workplace,
           importanceSinceReflection: n.importanceSinceReflection,
           lastReflectionDay: n.lastReflectionDay, relationships2: undefined,
           memories: n.memories.map((m) =>
@@ -1621,10 +1687,11 @@ if (typeof module !== "undefined") module.exports = SIM;
         };
       }
       localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 7, clock: state.clock, memCounter: state.memCounter, seed: state.seed,
+        v: 8, clock: state.clock, memCounter: state.memCounter, seed: state.seed,
         player: { x: state.player.x, y: state.player.y,
                   role: state.player.role, faction: state.player.faction,
-                  inventory: state.player.inventory },
+                  inventory: state.player.inventory,
+                  coins: state.player.coins, workplace: state.player.workplace },
         convoCooldowns: state.convoCooldowns,
         crimeLog: state.crimeLog, lastCrimeDay: state.lastCrimeDay,
         worldItems: state.worldItems, itemCounter: state.itemCounter,
@@ -1637,12 +1704,14 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 7) return; // older saves start fresh
+      if (s.v !== 8) return; // older saves start fresh
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
       if (s.player.role) state.player.role = s.player.role;
       if (s.player.faction !== undefined) state.player.faction = s.player.faction;
       if (s.player.inventory) state.player.inventory = s.player.inventory;
+      if (s.player.coins !== undefined) state.player.coins = s.player.coins;
+      if (s.player.workplace !== undefined) state.player.workplace = s.player.workplace;
       state.convoCooldowns = s.convoCooldowns || {};
       state.crimeLog = s.crimeLog || [];
       state.lastCrimeDay = s.lastCrimeDay || 0;
@@ -1668,6 +1737,8 @@ if (typeof module !== "undefined") module.exports = SIM;
         if (d.goal) n.goal = d.goal;
         if (d.gang !== undefined) n.gang = d.gang;
         if (d.isOfficer !== undefined) n.isOfficer = d.isOfficer;
+        if (d.coins !== undefined) n.coins = d.coins;
+        if (d.workplace !== undefined) n.workplace = d.workplace;
         if (d.importanceSinceReflection) n.importanceSinceReflection = d.importanceSinceReflection;
         if (d.lastReflectionDay) n.lastReflectionDay = d.lastReflectionDay;
         n.memories = d.memories.map((m) =>
@@ -2363,6 +2434,8 @@ if (typeof module !== "undefined") module.exports = SIM;
     talkbtn.style.display = canTalk && "ontouchstart" in window ? "flex" : "none";
     document.getElementById("playerchip").textContent =
       `You — ${p.role}${p.faction ? ` · ${p.faction === "police" ? "police" : "Mudlarks"}` : ""}` +
+      (p.workplace === SIM.BUILDINGS[0].id ? " · bakery staff" : "") +
+      ` · ${p.coins}¢` +
       (p.inventory.length ? ` · ${p.inventory.map((i) => i.replace(/_/g, " ")).join(", ")}` : "");
 
     requestAnimationFrame(frame);

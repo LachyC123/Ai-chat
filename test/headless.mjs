@@ -145,6 +145,17 @@ const edithBought = edith.memories.filter((mm) => mm.text.startsWith("Bought a f
 if (edithBought.length < DAYS) fail(`Edith should buy bread daily: ${edithBought.length} purchases over ${DAYS} days`);
 if (sold.length !== bought.length) fail(`sales (${sold.length}) should mirror purchases (${bought.length})`);
 
+// ---- Coin economy (Phase 8): total coins are conserved -------------------
+// Bread sales and thefts only MOVE coin between people (nothing is minted
+// or burned), so the town-wide total must equal the starting total.
+const START_COINS = 30 + 14 + 20 + 18 + 8 + 5 + 3 + 15; // cast + player
+const totalCoins = state.npcs.reduce((s, n) => s + (n.coins || 0), 0) + (state.player.coins || 0);
+if (totalCoins !== START_COINS)
+  fail(`coins not conserved: ${totalCoins} vs ${START_COINS} at start`);
+// Sales should have moved coin into the bakers' pockets
+if (sold.length > 0 && (mara.coins + tomas.coins) <= 44)
+  fail(`bakers took ${sold.length} sales but hold no extra coin (${mara.coins}+${tomas.coins})`);
+
 // ---- Crime & law chain (Phase 5+7) — seeded, so lifecycle not exact days ---
 if (state.crimeLog.length < 1) fail("no crimes over the run — the market should tempt somebody");
 const c0 = state.crimeLog[0];
