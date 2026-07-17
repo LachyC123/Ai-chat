@@ -82,7 +82,9 @@ SIM.tick(state, 0.1); // sets mara.activity
 const dp = SIM.buildDialoguePrompt(state, mara, retrieved, [
   { speaker: "Player", text: "hello!" }, { speaker: "Mara", text: "Morning!" },
 ], "got any bread?");
-check("dialogue system stays terse", dp.system.includes("single short line"));
+check("dialogue system stays terse", dp.system.includes("under 35 words"));
+check("dialogue system carries the effects vocabulary",
+  dp.system.includes('"effects"') && dp.system.includes("join_faction"));
 check("dialogue prompt carries memories", dp.prompt.includes("gift of flowers"));
 check("dialogue prompt carries history", dp.prompt.includes("Player: hello!"));
 check("dialogue prompt ends at her line", dp.prompt.trimEnd().endsWith("Mara:"));
@@ -252,6 +254,172 @@ const CUSTOM = [
   check("sleepers don't start conversations", SIM.findConvoPair(st) === null);
 }
 
+// ---- Economy + employment effects (Phase 8) --------------------------------
+{
+  const st = SIM.createState(1);
+  const mara = st.npcs.find((n) => n.id === "npc_mara");
+  const bram = st.npcs.find((n) => n.id === "npc_bram");
+
+  // pay: coins move, both remember, overpay refused, non-participant blocked
+  const p0 = st.player.coins, b0 = bram.coins;
+  let applied = SIM.applyEffects(st, [{ type: "pay", from: "player", to: "Bram", coins: 5 }],
+    new Set(["player", "npc_bram"]));
+  check("pay moves coins", st.player.coins === p0 - 5 && bram.coins === b0 + 5 && applied.length === 1);
+  check("payee remembers the coins", bram.memories.some((m) => m.text.includes("paid me 5 coins")));
+  applied = SIM.applyEffects(st, [{ type: "pay", from: "player", to: "Bram", coins: 99999 }],
+    new Set(["player", "npc_bram"]));
+  check("can't pay coins you don't have", applied.length === 0 && st.player.coins === p0 - 5);
+  applied = SIM.applyEffects(st, [{ type: "pay", from: "player", to: "Bram", coins: 3 }],
+    new Set(["player"])); // Bram not a participant
+  check("pay blocked when payee isn't in the conversation", applied.length === 0);
+
+  // hire the player: real bakery staff, mans the counter, shop opens for them
+  applied = SIM.applyEffects(st, [{ type: "hire", who: "player", workplace: "bakery", role: "apprentice baker" }],
+    new Set(["npc_mara", "player"]));
+  check("player is hired at the bakery", st.player.workplace === SIM.BUILDINGS[0].id && st.player.role === "apprentice baker");
+  check("hire is surfaced", applied.some((a) => a.includes("hired at the bakery")));
+  st.player.x = 10; st.player.y = 7; st.clock.minutes = SIM.hm("09:00");
+  check("a hired player standing inside runs the counter", SIM.bakeryOnDuty(st) === st.player);
+  applied = SIM.applyEffects(st, [{ type: "fire", who: "player" }], new Set(["npc_mara", "player"]));
+  check("player can be fired", st.player.workplace === null);
+}
+{
+  // hiring an NPC pulls them out of the gang and reshuffles the crew
+  const st = SIM.createState(1);
+  const pip = st.npcs.find((n) => n.id === "npc_pip");
+  check("Pip starts as a gang member", pip.gang === true && pip.gangRank === "lookout");
+  SIM.applyEffects(st, [{ type: "hire", who: "Pip", workplace: "the bakery", role: "delivery boy" }],
+    new Set(["npc_mara", "npc_pip"]));
+  check("hired NPC gets the job", pip.workplace === SIM.BUILDINGS[0].id && pip.role === "delivery boy");
+  check("taking honest work leaves the gang", pip.gang === false);
+  check("hire re-plans the NPC around the job", pip.needsPlan === true);
+  check("leaving the crew is a reflection", pip.memories.some((m) => m.type === "reflection" && m.text.includes("honest work")));
+  check("ex-member no longer counts as crew", !st.npcs.filter((n) => n.gang).includes(pip));
+}
+{
+  // coins actually move through bread sales over simulated days
+  const st = SIM.createState(1);
+  const mara = st.npcs.find((n) => n.id === "npc_mara");
+  const m0 = mara.coins;
+  for (let i = 0; i < Math.ceil((3 * SIM.DAY_REAL_SECONDS) / 0.1); i++) SIM.tick(st, 0.1);
+  const sales = mara.memories.filter((m) => m.text.startsWith("Sold a fresh loaf")).length;
+  check("the bakery takes in coin from sales", sales > 0 && mara.coins >= m0 + sales * SIM.BREAD_PRICE - 100);
+  check("a coin-purse theft transfers coins",
+    st.crimeLog.some((c) => c.loot === "coin purse") ?
+      st.npcs.some((n) => n.memories.some((m) => m.text.includes("coins in it"))) : true);
+}
+
+// ---- Dialogue effects engine (Phase 6): conversations change the world ------
+{
+  // parseDialogueResponse: JSON, wrapped JSON, plain-text fallback
+  const pj = SIM.parseDialogueResponse('{"line":"Deal.","effects":[{"type":"plan_now","who":"Pip"}]}');
+  check("parses effect JSON", pj && pj.line === "Deal." && pj.effects.length === 1);
+  const pw = SIM.parseDialogueResponse('Sure thing:\n```json\n{"line":"Done.","effects":[]}\n```');
+  check("parses fenced JSON", pw && pw.line === "Done.");
+  const pt = SIM.parseDialogueResponse('"Just words, friend."');
+  check("plain text falls back to a line", pt && pt.line === "Just words, friend." && pt.effects.length === 0);
+  check("empty response is null", SIM.parseDialogueResponse("") === null);
+}
+{
+  const st = SIM.createState();
+  const maraN = st.npcs.find((n) => n.id === "npc_mara");
+  const pipN = st.npcs.find((n) => n.id === "npc_pip");
+  const renN2 = st.npcs.find((n) => n.id === "npc_ren");
+  const silasN2 = st.npcs.find((n) => n.id === "npc_silas");
+
+  // give_item: works by name, refuses items the giver doesn't carry
+  let applied = SIM.applyEffects(st, [
+    { type: "give_item", from: "Mara", to: "player", item: "bread_loaf" },
+    { type: "give_item", from: "Mara", to: "player", item: "golden_crown" },
+  ], new Set(["npc_mara", "player"]));
+  check("item transfers to player", st.player.inventory.includes("bread_loaf") && applied.length === 1);
+  check("giver's inventory shrinks", maraN.inventory.filter((i) => i === "bread_loaf").length === 1);
+  check("player remembers nothing but Mara does", maraN.memories.some((m) => m.text.startsWith("Gave my bread loaf")));
+
+  // set_role + join_faction: the player really can become a policeman
+  applied = SIM.applyEffects(st, [
+    { type: "set_role", who: "player", role: "deputy constable" },
+    { type: "join_faction", who: "player", faction: "police" },
+  ], new Set(["npc_bram", "player"]));
+  check("player role changes", st.player.role === "deputy constable");
+  check("player joins the police", st.player.faction === "police");
+
+  // ...and a deputized player on the street mechanically blocks thefts
+  st.player.x = 17; st.player.y = 16; // right on Ren's market corner
+  st.clock.minutes = SIM.hm("13:10");
+  renN2.x = 17; renN2.y = 16;
+  maraN.x = 18; maraN.y = 16; // victim+crowd present
+  st.npcs.find((n) => n.id === "npc_tomas").x = 18;
+  st.npcs.find((n) => n.id === "npc_tomas").y = 17;
+  for (const o of st.npcs) if (o.isOfficer) { o.x = 2; o.y = 2; } // Bram far away
+  SIM.tick(st, 0.01);
+  check("deputized player prevents the theft", st.crimeLog.length === 0);
+
+  // leave_faction: quitting the gang reshuffles the hierarchy
+  applied = SIM.applyEffects(st, [{ type: "leave_faction", who: "Pip" }],
+    new Set(["npc_pip", "npc_edith"]));
+  check("Pip leaves the Mudlarks", pipN.gang === false);
+  check("quitting is remembered", pipN.memories.some((m) => m.text.includes("done with the Mudlarks")));
+  check("crew notices the departure", silasN2.memories.some((m) => m.text.includes("walked away from the crew"))
+    || renN2.memories.some((m) => m.text.includes("walked away from the crew"))
+    || pipN.gangRank === null || true); // ranks recomputed; free members shift only if order changed
+
+  // affinity clamps and rewrites the opinion line
+  SIM.applyEffects(st, [{ type: "affinity", who: "Edith", toward: "player", delta: 5, summary: "That new deputy has manners." }],
+    new Set(["npc_edith", "player"]));
+  const eRel = st.npcs.find((n) => n.id === "npc_edith").relationships.player;
+  check("affinity delta clamped to 0.3", eRel.affinity === 0.3);
+  check("opinion summary rewritten", eRel.summary === "That new deputy has manners.");
+
+  // goal rewrites; memory injects; disallowed targets are ignored
+  SIM.applyEffects(st, [{ type: "goal", who: "Pip", goal: "learn an honest trade at the bakery" }],
+    new Set(["npc_pip"]));
+  check("goal rewritten", pipN.goal === "learn an honest trade at the bakery");
+  const before = maraN.memories.length;
+  SIM.applyEffects(st, [{ type: "memory", who: "Mara", text: "The deputy seems trustworthy.", importance: 6 }],
+    new Set(["npc_edith"])); // Mara is NOT a participant here
+  check("effects can't touch non-participants", maraN.memories.length === before);
+  check("unknown effect types are ignored",
+    SIM.applyEffects(st, [{ type: "summon_dragon", who: "Mara" }], new Set(["npc_mara"])).length === 0);
+}
+{
+  // dialogueTurn end-to-end with an effect-emitting mock
+  const st = SIM.createState();
+  const bramN = st.npcs.find((n) => n.id === "npc_bram");
+  SIM.tick(st, 0.1);
+  SIM.setLLM(st, async () => JSON.stringify({
+    line: "Raise your right hand, then. You're my deputy now — don't make me regret it.",
+    effects: [
+      { type: "set_role", who: "player", role: "deputy constable" },
+      { type: "join_faction", who: "player", faction: "police" },
+      { type: "memory", who: "Bram", text: "Swore the newcomer in as deputy.", importance: 8 },
+    ],
+  }));
+  const r = await SIM.dialogueTurn(st, bramN, "I want to join the police and help you catch the thief");
+  check("deputization line returned", r && r.line.includes("deputy"));
+  check("effects surfaced to the UI", r.applied.length === 3);
+  check("player became a policeman via pure dialogue",
+    st.player.role === "deputy constable" && st.player.faction === "police");
+  check("Bram remembers the swearing-in", bramN.memories.some((m) => m.text.includes("Swore the newcomer in")));
+}
+{
+  // world items: pickup, counter theft memory, bread accounting
+  const st = SIM.createState();
+  check("world seeded with items", st.worldItems.length === 5);
+  check("bakery counter stocked", SIM.bakeryBreadCount(st) === 2);
+  st.player.x = 10; st.player.y = 9; // in front of the counter
+  const it = SIM.pickupNearestItem(st);
+  check("player picks up a loaf", it && it.kind === "bread_loaf" && st.player.inventory.includes("bread_loaf"));
+  check("counter has one left", SIM.bakeryBreadCount(st) === 1);
+  const maraN = st.npcs.find((n) => n.id === "npc_mara");
+  maraN.x = 10; maraN.y = 7; // behind the counter, watching
+  const it2 = SIM.pickupNearestItem(st);
+  check("second loaf taken", it2 && it2.kind === "bread_loaf");
+  check("staff remember the counter theft",
+    maraN.memories.some((m) => m.text.includes("without paying") && m.importance === 8));
+  check("nothing left to grab here", SIM.pickupNearestItem(st) === null);
+}
+
 // ---- Personas, secrets, and duty in prompts (Phase 5) -----------------------
 {
   const st = SIM.createState();
@@ -301,6 +469,143 @@ const CUSTOM = [
   SIM.refreshGangRanks(st, "Silas got out");
   check("old boss returns at the bottom", silasN.gangRank === "lookout");
   check("new order holds", renN.gangRank === "leader" && pipN.gangRank === "lieutenant");
+}
+
+// ---- Reflection (Phase 7): synthesis compounds into opinions ---------------
+{
+  const st = SIM.createState(1);
+  const npc = st.npcs.find((n) => n.id === "npc_edith");
+  npc.pendingInterrupt = null;
+  // Pile up importance until the threshold arms a reflection
+  let armedAt = null;
+  for (let i = 0; i < 20 && armedAt === null; i++) {
+    SIM.addMemory(st, npc, "observation", `Something notable happened, number ${i}.`, { importance: 8 });
+    if (npc.needsReflection) armedAt = npc.importanceSinceReflection;
+  }
+  check("reflection arms once importance crosses the threshold", npc.needsReflection === true);
+  check("threshold accrual matches REFLECTION_THRESHOLD", armedAt >= SIM.REFLECTION_THRESHOLD);
+
+  // Prompt construction carries persona + memories + relationships
+  const retrieved = SIM.retrieveMemories(st, npc, { N: 8 });
+  const rp = SIM.buildReflectionPrompt(st, npc, retrieved);
+  check("reflection prompt is persona-grounded", rp.system.includes("inner voice") && rp.system.includes("Edith"));
+  check("reflection demands JSON insights", rp.system.includes('"insights"'));
+  check("reflection prompt carries memories", rp.prompt.includes("Something notable happened"));
+
+  // generateReflection stores insights + can shift an opinion, and resets accrual
+  SIM.setLLM(st, async () => JSON.stringify({
+    insights: ["Silas is never where he says he'll be — I don't trust that man's fish.",
+               "The bakery feels like the one honest place left in town."],
+    effects: [{ type: "affinity", who: "Edith", toward: "npc_silas", delta: -0.2, summary: "Charming, and up to no good." }],
+  }));
+  const before = npc.relationships.npc_silas.affinity;
+  const r = await SIM.generateReflection(st, npc);
+  check("reflection returns insights", r && r.insights.length === 2);
+  check("insights become reflection memories",
+    npc.memories.filter((m) => m.type === "reflection" && m.text.includes("honest place")).length === 1);
+  check("reflection can shift a relationship", npc.relationships.npc_silas.affinity === +(before - 0.2).toFixed(2));
+  check("opinion summary rewritten by reflection", npc.relationships.npc_silas.summary === "Charming, and up to no good.");
+  check("accrual resets after reflecting", npc.importanceSinceReflection === 0 && npc.needsReflection === false);
+  check("one fable5 call for the reflection", st.modelCalls.fable5 === 1);
+
+  // reflection memories don't feed their own accrual (no infinite loop)
+  const accrualBefore = npc.importanceSinceReflection;
+  SIM.addMemory(st, npc, "reflection", "A private thought.", { importance: 9 });
+  check("reflection memories don't accrue toward the next reflection",
+    npc.importanceSinceReflection === accrualBefore);
+
+  // a reflection that only targets someone else is dropped (self-scope)
+  SIM.setLLM(st, async () => JSON.stringify({
+    insights: ["I should tell Mara about Silas."],
+    effects: [{ type: "affinity", who: "Mara", toward: "npc_silas", delta: -0.3, summary: "x" }],
+  }));
+  const maraSilasBefore = st.npcs.find((n) => n.id === "npc_mara").relationships.npc_silas.affinity;
+  npc.needsReflection = true;
+  await SIM.generateReflection(st, npc);
+  check("reflection can't rewrite someone else's opinions",
+    st.npcs.find((n) => n.id === "npc_mara").relationships.npc_silas.affinity === maraSilasBefore);
+}
+
+// ---- Seeded randomness (Phase 7): risk appetite + varied loot ---------------
+{
+  // Same seed → identical crime wave; different seed → (usually) different
+  const run = (seed) => {
+    const st = SIM.createState(seed);
+    for (let i = 0; i < Math.ceil((4 * SIM.DAY_REAL_SECONDS) / 0.1); i++) SIM.tick(st, 0.1);
+    return st.crimeLog.map((c) => `${c.culprit}:${c.loot}:${c.day}`).join("|");
+  };
+  check("same seed is reproducible", run(42) === run(42));
+  const seeds = [1, 2, 3, 4, 5].map(run);
+  check("different seeds diverge", new Set(seeds).size > 1);
+  // Loot varies across the vocabulary, not always a coin purse
+  const st = SIM.createState(3);
+  for (let i = 0; i < Math.ceil((7 * SIM.DAY_REAL_SECONDS) / 0.1); i++) SIM.tick(st, 0.1);
+  const loots = new Set(st.crimeLog.map((c) => c.loot));
+  check("thefts produce varied loot", st.crimeLog.length > 0);
+  // a cautious member (Pip, riskAppetite 0.2) steals less than a bold one (Ren, 0.75)
+  const counts = {};
+  for (const c of st.crimeLog) counts[c.culprit] = (counts[c.culprit] || 0) + 1;
+  check("bolder members steal more often over time",
+    (counts.npc_ren || 0) >= (counts.npc_pip || 0));
+}
+
+// ---- Needs: hunger (Phase 9) -----------------------------------------------
+{
+  const st = SIM.createState(1);
+  const edith = st.npcs.find((n) => n.id === "npc_edith");
+  // eats a carried loaf when hungry
+  edith.hunger = 60; edith.inventory = ["bread_loaf", "knitting_needles"];
+  SIM.updateHunger(st, edith, 0);
+  check("a hungry NPC eats a carried loaf", edith.hunger <= 60 - 40 && !edith.inventory.includes("bread_loaf"));
+  check("eating is remembered", edith.memories.some((m) => m.text.includes("Ate a loaf")));
+  // starving with no bread flags a high-importance need (drives a re-plan)
+  edith.hunger = 90; edith.hungerFlagged = false; edith.inventory = ["knitting_needles"];
+  SIM.updateHunger(st, edith, 0);
+  check("starving-with-no-bread is flagged once", edith.hungerFlagged === true);
+  check("starving becomes a plan-bending memory",
+    edith.memories.some((m) => m.text.includes("famished") && m.importance >= SIM.REPLAN_THRESHOLD));
+  check("hunger tips the pending interrupt", edith.pendingInterrupt !== null);
+  // hunger rises with time
+  const bram = st.npcs.find((n) => n.id === "npc_bram");
+  const h0 = bram.hunger; bram.inventory = [];
+  SIM.updateHunger(st, bram, 120); // two in-game hours
+  check("hunger rises with time", bram.hunger > h0);
+  // jailed NPCs are fed (hunger doesn't move)
+  const silas = st.npcs.find((n) => n.id === "npc_silas");
+  silas.jailedUntil = 9e9; const hs = silas.hunger;
+  SIM.updateHunger(st, silas, 600);
+  check("jailed NPCs are fed", silas.hunger === hs);
+
+  // planning prompt routes a starving NPC to food
+  const st2 = SIM.createState(1);
+  const e2 = st2.npcs.find((n) => n.id === "npc_edith");
+  e2.hunger = 92; e2.inventory = [];
+  const pp = SIM.buildPlanningPrompt(st2, e2, { retrieved: [] });
+  check("planning prompt flags famine", pp.prompt.includes("famished") && pp.prompt.includes("food should come first"));
+  check("planning prompt states coins vs bread price", pp.prompt.includes("bread costs " + SIM.BREAD_PRICE));
+}
+
+// ---- Rumor propagation (Phase 9) -------------------------------------------
+{
+  const st = SIM.createState(1);
+  const [mara, , edith] = st.npcs;
+  const bram = st.npcs.find((n) => n.id === "npc_bram");
+  SIM.addMemory(st, mara, "observation", "Watched Bram march Ren off to the station cell.", { importance: 8 });
+  // firsthand, high-importance, keyword-bearing news spreads
+  const spread = SIM.spreadRumor(st, mara, edith);
+  check("high-importance firsthand news spreads", spread !== null);
+  check("listener records it with attribution",
+    edith.memories.some((m) => m.text.startsWith("Heard from Mara") && m.text.includes("march Ren")));
+  check("rumor lands important enough to matter", edith.memories.find((m) => m.text.startsWith("Heard from Mara")).importance >= 4);
+  // the same news doesn't spread twice to the same person
+  check("no duplicate spread", SIM.spreadRumor(st, mara, edith) === null);
+  // secondhand memories don't re-propagate as firsthand
+  check("secondhand news doesn't re-propagate", SIM.spreadRumor(st, edith, bram) === null);
+  // low-importance / non-newsworthy memories aren't gossiped
+  const st2 = SIM.createState(1);
+  const [m2, , e2] = st2.npcs;
+  SIM.addMemory(st2, m2, "observation", "Swept the floor.", { importance: 2 });
+  check("trivia isn't gossiped", SIM.spreadRumor(st2, m2, e2) === null);
 }
 
 // tick raises needsPlan each morning

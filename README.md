@@ -56,16 +56,96 @@ Controls: **WASD / arrows** move · **E** talk · **M** memory stream · **T** t
 Open the ⚙ settings panel to add keys. Both live only in your browser's
 localStorage — never in the repo.
 
-- **Anthropic key** — enables the Fable 5 autonomy layer (`claude-fable-5`,
-  with a server-side fallback to `claude-opus-4-8` on safety-classifier false
-  positives): every NPC plans their own day each in-game morning (1 call/NPC/
-  day, staggered), NPCs who meet strike up their own conversations (1 call per
-  line, max 4 lines, per-pair cooldown), you can talk to anyone in free text
-  (1 call/turn), and high-importance events — overheard gossip, a theft report
-  — trigger an escalated re-plan (cooldown-limited). Without it: fallback
-  rhythms + canned dialogue, no NPC-to-NPC chatter.
-- **OpenAI key** — enables memory embeddings (`text-embedding-3-small`).
-  Without it, retrieval scores on recency + importance.
+- **OpenAI key — runs the whole game on its own.** Paste it in the settings
+  panel and everything works: every NPC plans, talks, reflects and gossips via
+  `gpt-4o-mini`, and memory retrieval uses `text-embedding-3-small`. No second
+  key needed. (Provider dropdown: Auto / OpenAI / Anthropic.)
+- **Anthropic key — optional.** If you'd rather use `claude-fable-5` (with a
+  server-side fallback to `claude-opus-4-8`) for the voice layer, add it and
+  pick it in the dropdown; embeddings still come from OpenAI.
+
+Whichever provider is active drives the same autonomy layer: every NPC plans
+their own day each in-game morning (1 call/NPC/day, staggered), NPCs who meet
+strike up their own conversations (1 call per line, max 4 lines, per-pair
+cooldown), you can talk to anyone in free text (1 call/turn), high-importance
+events trigger escalated re-plans, and once enough has happened to someone they
+**reflect** — synthesizing their memories into higher-level insights that get
+stored back and can rewrite their opinions and goals ("the market crowd is
+where all the trouble begins" → a changed relationship with the fisherman).
+Without any key: fallback rhythms + canned dialogue, no NPC-to-NPC chatter.
+
+### Consequences ripple (nothing is isolated)
+
+Actions land on other people. The clearest case: a shop only *operates* when
+a non-jailed staffer is actually inside it — so if both bakers get arrested (or
+simply choose a day at the park), the bakery is **SHUT**, and every customer
+who comes for bread notices *and knows why* ("word is Mara and Tomas got taken
+in by the constable"). That's a high-importance memory that bends their day and
+spreads through gossip. Crime feeds law feeds the gang hierarchy feeds who's
+around to run the shop — one arrest can quietly reshape the whole town's
+morning.
+
+### Needs make the economy load-bearing
+
+NPCs get hungry over the day. They eat bread from their bag when they can; a
+working baker eats from her own oven; anyone who goes famished with an empty
+bag gets a plan-bending "I need to get to the bakery" memory. So bread demand
+is *real* — which means the bakery matters, which means an arrest that shuts it
+now leaves the whole town hungry, and hungry people change their plans. Hunger,
+coins, and job status all show on each NPC's card in the memory panel.
+
+### News travels (rumor propagation)
+
+When two NPCs talk, they don't just co-exist — they swap their juiciest recent
+firsthand news. So an arrest, a theft, or a shut shop reaches people who never
+witnessed it, attributed to who they heard it from ("Heard from Mara: …").
+Secondhand memories don't echo onward, so gossip spreads one hop per teller
+instead of looping forever — the town develops a shared, imperfect awareness of
+its own events.
+
+### Seeded randomness
+
+The world has luck. Each session rolls a seed (`createState(seed)` fixes it);
+gang members have individual **risk appetite**, so whether anyone steals on a
+given day — and who, and what they lift (coin purse, silver ring, pocket watch,
+a loaf…) — varies run to run. Bold Ren works the crowd often; cautious Pip
+rarely does. Same seed replays identically (that's how the tests stay
+deterministic); different seeds tell different stories.
+
+### Conversations change the world (no scripts)
+
+Every dialogue turn — yours or NPC-to-NPC — returns `{line, effects}`. The
+model decides *what happens*; a small interpreter is only the physics. The
+effect vocabulary: give/take items, **pay coins**, **hire/fire** (a real job
+at the bakery), set roles (get sworn in as the constable's deputy), join or
+leave factions (police / the Mudlarks), shift opinions, rewrite long-term
+goals, plant memories, trigger re-plans. A player sworn into the police
+suppresses street crime nearby; an NPC who quits the gang reshuffles the
+hierarchy on the spot. Invalid or over-reaching effects are dropped silently —
+the sim never breaks on a malformed response.
+
+### A coin economy, and jobs that are real
+
+Everyone carries coins (the bakers richer, the gang broke). Bread costs 2
+coins and the coin actually moves from customer to baker; a stolen coin purse
+transfers real money from the victim; the `pay` effect settles debts and
+bribes. Coins are conserved town-wide — nothing is minted, only moved.
+
+Employment is not cosmetic. `hire` makes someone **actual bakery staff**: they
+work the counter, and the shop is *open because of them*. Hire the player and
+you can run the counter yourself and take the coin — even keep the shop open
+after Mara's arrested. Hire Pip and he leaves the gang for honest work (which
+reshuffles the crew) and re-plans his day around the job. It's the loop that
+closes "hire the player as staff who actually mans the counter."
+
+### Physical items
+
+Items exist in the world: loaves stack on the bakery counter (restocked by
+real oven batches, consumed by purchases), goods sit on market stalls, and
+everyone visibly holds their latest possession. Walk up and press **E** to
+pick things up — though grabbing off the counter under staff eyes is
+remembered, and what that *means* is up to the AI. Items move between people
+through dialogue effects, land in inventories, and show up in memories.
 
 Game state (memories, plan, clock) auto-saves to localStorage; "Reset save
 data" in settings wipes it.
@@ -77,9 +157,10 @@ pure logic, no DOM — so the headless harness runs the exact shipped code in No
 
 ```sh
 node test/retrieval.mjs       # retrieval math vs a hand-written memory log
-node test/planning.mjs        # plan validation, prompts, dialogue, re-plan (mock LLM)
-node test/headless.mjs        # 3 simulated days (default)
+node test/planning.mjs        # plans, dialogue effects, reflection, gang math (mock LLM)
+node test/headless.mjs        # 3 simulated days (default), seed 12345
 node test/headless.mjs 7      # a full week
+node test/headless.mjs 3 99   # a different seed → a different crime wave
 ```
 
 `retrieval.mjs` validates the scoring function (α·recency + β·importance +
@@ -131,10 +212,28 @@ calls (never per-tick), `fable5` still zero (instrumented via
       cell + boat-shed hideout; deterministic crime chain (theft → witnesses → report →
       wanted → arrest → one-day sentence → rank reshuffle → lie-low period) that the
       AI planning/conversation layer reacts to.
-- [ ] **6a. Reflection** — reflection cadence (insights compound into opinions),
-      relationship summaries that evolve from what actually happens.
-- [ ] **6b. World fill** — remaining buildings, items, shop hours, pathfinding polish,
-      more cast and places.
+- [x] **6. Open-ended agency** — dialogue effects engine (`{line, effects}` from every
+      turn): item transfers, role changes, faction joins/leaves, opinion shifts, goal
+      rewrites, planted memories, re-plan triggers — all model-decided, interpreter-
+      validated. Physical world items (counter loaves restocked by oven batches,
+      stall goods, pickups with E, held-item rendering), player identity (role,
+      faction, inventory — a deputized player suppresses street crime), OpenAI
+      (`gpt-4o-mini`) as a selectable voice/planning provider alongside Fable 5.
+- [x] **7. Intellect & ripple** — reflection (threshold-triggered memory synthesis into
+      insights that rewrite opinions/goals); cascading consequences (a business only
+      operates when staff are present, so an arrest or a day off shuts the shop and
+      customers react with the reason); seeded randomness (per-run luck, gang risk
+      appetite, varied loot) so stories diverge run to run.
+- [x] **8. Economy & employment** — coins on everyone (conserved town-wide), real coin
+      transfer on bread sales / theft / the new `pay` effect; `hire`/`fire` that makes
+      someone actual bakery staff (a hired player runs the counter and keeps the shop
+      open; a hired NPC leaves the gang and re-plans around the job).
+- [x] **9. Needs, gossip & one-key play** — hunger system (bread demand is real, so the
+      bakery/arrest cascade has teeth); rumor propagation (firsthand news spreads one hop
+      per teller, attributed, no echo loops); settings made clear that one OpenAI key runs
+      dialogue + planning + embeddings.
+- [ ] **10. World fill** — more runnable businesses, shop hours, pathfinding polish,
+      more cast and places, still-wider effect vocabulary.
 - [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
 
 ## Architecture notes (Phase 1)
