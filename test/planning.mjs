@@ -549,6 +549,65 @@ const CUSTOM = [
     (counts.npc_ren || 0) >= (counts.npc_pip || 0));
 }
 
+// ---- Needs: hunger (Phase 9) -----------------------------------------------
+{
+  const st = SIM.createState(1);
+  const edith = st.npcs.find((n) => n.id === "npc_edith");
+  // eats a carried loaf when hungry
+  edith.hunger = 60; edith.inventory = ["bread_loaf", "knitting_needles"];
+  SIM.updateHunger(st, edith, 0);
+  check("a hungry NPC eats a carried loaf", edith.hunger <= 60 - 40 && !edith.inventory.includes("bread_loaf"));
+  check("eating is remembered", edith.memories.some((m) => m.text.includes("Ate a loaf")));
+  // starving with no bread flags a high-importance need (drives a re-plan)
+  edith.hunger = 90; edith.hungerFlagged = false; edith.inventory = ["knitting_needles"];
+  SIM.updateHunger(st, edith, 0);
+  check("starving-with-no-bread is flagged once", edith.hungerFlagged === true);
+  check("starving becomes a plan-bending memory",
+    edith.memories.some((m) => m.text.includes("famished") && m.importance >= SIM.REPLAN_THRESHOLD));
+  check("hunger tips the pending interrupt", edith.pendingInterrupt !== null);
+  // hunger rises with time
+  const bram = st.npcs.find((n) => n.id === "npc_bram");
+  const h0 = bram.hunger; bram.inventory = [];
+  SIM.updateHunger(st, bram, 120); // two in-game hours
+  check("hunger rises with time", bram.hunger > h0);
+  // jailed NPCs are fed (hunger doesn't move)
+  const silas = st.npcs.find((n) => n.id === "npc_silas");
+  silas.jailedUntil = 9e9; const hs = silas.hunger;
+  SIM.updateHunger(st, silas, 600);
+  check("jailed NPCs are fed", silas.hunger === hs);
+
+  // planning prompt routes a starving NPC to food
+  const st2 = SIM.createState(1);
+  const e2 = st2.npcs.find((n) => n.id === "npc_edith");
+  e2.hunger = 92; e2.inventory = [];
+  const pp = SIM.buildPlanningPrompt(st2, e2, { retrieved: [] });
+  check("planning prompt flags famine", pp.prompt.includes("famished") && pp.prompt.includes("food should come first"));
+  check("planning prompt states coins vs bread price", pp.prompt.includes("bread costs " + SIM.BREAD_PRICE));
+}
+
+// ---- Rumor propagation (Phase 9) -------------------------------------------
+{
+  const st = SIM.createState(1);
+  const [mara, , edith] = st.npcs;
+  const bram = st.npcs.find((n) => n.id === "npc_bram");
+  SIM.addMemory(st, mara, "observation", "Watched Bram march Ren off to the station cell.", { importance: 8 });
+  // firsthand, high-importance, keyword-bearing news spreads
+  const spread = SIM.spreadRumor(st, mara, edith);
+  check("high-importance firsthand news spreads", spread !== null);
+  check("listener records it with attribution",
+    edith.memories.some((m) => m.text.startsWith("Heard from Mara") && m.text.includes("march Ren")));
+  check("rumor lands important enough to matter", edith.memories.find((m) => m.text.startsWith("Heard from Mara")).importance >= 4);
+  // the same news doesn't spread twice to the same person
+  check("no duplicate spread", SIM.spreadRumor(st, mara, edith) === null);
+  // secondhand memories don't re-propagate as firsthand
+  check("secondhand news doesn't re-propagate", SIM.spreadRumor(st, edith, bram) === null);
+  // low-importance / non-newsworthy memories aren't gossiped
+  const st2 = SIM.createState(1);
+  const [m2, , e2] = st2.npcs;
+  SIM.addMemory(st2, m2, "observation", "Swept the floor.", { importance: 2 });
+  check("trivia isn't gossiped", SIM.spreadRumor(st2, m2, e2) === null);
+}
+
 // tick raises needsPlan each morning
 {
   const st = SIM.createState(); // day 1, 06:50

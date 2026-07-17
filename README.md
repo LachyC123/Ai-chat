@@ -56,11 +56,13 @@ Controls: **WASD / arrows** move · **E** talk · **M** memory stream · **T** t
 Open the ⚙ settings panel to add keys. Both live only in your browser's
 localStorage — never in the repo.
 
-- **Anthropic key** — the premium voice: `claude-fable-5` with a server-side
-  fallback to `claude-opus-4-8` on safety-classifier false positives.
-- **OpenAI key** — memory embeddings (`text-embedding-3-small`), **and** it can
-  power dialogue/planning too (`gpt-4o-mini`) — pick the provider in the
-  settings dropdown (Auto uses Fable 5 when its key exists, else OpenAI).
+- **OpenAI key — runs the whole game on its own.** Paste it in the settings
+  panel and everything works: every NPC plans, talks, reflects and gossips via
+  `gpt-4o-mini`, and memory retrieval uses `text-embedding-3-small`. No second
+  key needed. (Provider dropdown: Auto / OpenAI / Anthropic.)
+- **Anthropic key — optional.** If you'd rather use `claude-fable-5` (with a
+  server-side fallback to `claude-opus-4-8`) for the voice layer, add it and
+  pick it in the dropdown; embeddings still come from OpenAI.
 
 Whichever provider is active drives the same autonomy layer: every NPC plans
 their own day each in-game morning (1 call/NPC/day, staggered), NPCs who meet
@@ -82,6 +84,24 @@ in by the constable"). That's a high-importance memory that bends their day and
 spreads through gossip. Crime feeds law feeds the gang hierarchy feeds who's
 around to run the shop — one arrest can quietly reshape the whole town's
 morning.
+
+### Needs make the economy load-bearing
+
+NPCs get hungry over the day. They eat bread from their bag when they can; a
+working baker eats from her own oven; anyone who goes famished with an empty
+bag gets a plan-bending "I need to get to the bakery" memory. So bread demand
+is *real* — which means the bakery matters, which means an arrest that shuts it
+now leaves the whole town hungry, and hungry people change their plans. Hunger,
+coins, and job status all show on each NPC's card in the memory panel.
+
+### News travels (rumor propagation)
+
+When two NPCs talk, they don't just co-exist — they swap their juiciest recent
+firsthand news. So an arrest, a theft, or a shut shop reaches people who never
+witnessed it, attributed to who they heard it from ("Heard from Mara: …").
+Secondhand memories don't echo onward, so gossip spreads one hop per teller
+instead of looping forever — the town develops a shared, imperfect awareness of
+its own events.
 
 ### Seeded randomness
 
@@ -208,7 +228,11 @@ calls (never per-tick), `fable5` still zero (instrumented via
       transfer on bread sales / theft / the new `pay` effect; `hire`/`fire` that makes
       someone actual bakery staff (a hired player runs the counter and keeps the shop
       open; a hired NPC leaves the gang and re-plans around the job).
-- [ ] **9. World fill** — more runnable businesses, shop hours, pathfinding polish,
+- [x] **9. Needs, gossip & one-key play** — hunger system (bread demand is real, so the
+      bakery/arrest cascade has teeth); rumor propagation (firsthand news spreads one hop
+      per teller, attributed, no echo loops); settings made clear that one OpenAI key runs
+      dialogue + planning + embeddings.
+- [ ] **10. World fill** — more runnable businesses, shop hours, pathfinding polish,
       more cast and places, still-wider effect vocabulary.
 - [ ] **6. Polish/juice** — dialogue UI, ambient SFX, simulated-week cost-ceiling runs, final art pass.
 

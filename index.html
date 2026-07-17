@@ -83,16 +83,19 @@
 
 <div id="settings" class="panel">
   <h3>Settings</h3>
-  <label>Anthropic API key (Fable 5)</label>
-  <input id="anthropickeyinput" type="password" placeholder="sk-ant-..." autocomplete="off">
-  <label>OpenAI API key (embeddings — and dialogue/planning if selected below)</label>
+  <p class="note" style="margin:0 0 8px">One OpenAI key runs the whole game — dialogue,
+  planning <em>and</em> memory embeddings. Just paste it below and press Save. The Anthropic
+  key is optional (only if you'd rather use Claude Fable 5 for the voice).</p>
+  <label>OpenAI API key — powers everything</label>
   <input id="keyinput" type="password" placeholder="sk-..." autocomplete="off">
-  <label>Voice &amp; planning model</label>
+  <label>Anthropic API key — optional (Fable 5 voice)</label>
+  <input id="anthropickeyinput" type="password" placeholder="sk-ant-..." autocomplete="off">
+  <label>Which model does the thinking?</label>
   <select id="llmprovider" style="width:100%; box-sizing:border-box; background:#14102a; color:#f2ead8;
           border:1px solid #7a6aa8; border-radius:6px; padding:4px 8px; font:inherit; margin:4px 0 8px">
-    <option value="auto">Auto (Fable 5 if set, else OpenAI)</option>
-    <option value="anthropic">Anthropic Fable 5</option>
-    <option value="openai">OpenAI gpt-4o-mini</option>
+    <option value="auto">Auto — Fable 5 if its key is set, otherwise OpenAI</option>
+    <option value="openai">OpenAI gpt-4o-mini (uses your OpenAI key)</option>
+    <option value="anthropic">Anthropic Claude Fable 5</option>
   </select>
   <div>
     <button id="savekey">Save keys</button>
@@ -100,11 +103,10 @@
     <button id="resetsave">Reset save data</button>
   </div>
   <div id="embedstatus" style="margin-top:8px"></div>
-  <p class="note">Keys never leave this browser (localStorage). Anthropic key powers
-  Mara's daily plans and free-text conversation (<code>claude-fable-5</code>, ~1 planning
-  call/day + 1 call per dialogue turn); OpenAI key powers
-  <code>text-embedding-3-small</code> memory retrieval. Without keys the sim still runs —
-  fallback schedule, canned dialogue, recency+importance retrieval.</p>
+  <p class="note">Keys never leave this browser (localStorage). With just an OpenAI key,
+  every NPC plans, talks, reflects and gossips via <code>gpt-4o-mini</code>, and memory
+  retrieval uses <code>text-embedding-3-small</code> — no Anthropic key needed. Without any
+  key the sim still runs on fallback rhythms + canned dialogue.</p>
 </div>
 
 <div id="mempanel" class="panel">
@@ -712,6 +714,7 @@ const SIM = (() => {
       wants: def.wants, goal: def.goal, secret: def.secret || null,
       isOfficer: !!def.isOfficer, gang: !!def.gang,
       coins: def.coins ?? 12, // simple economy (Phase 8)
+      hunger: def.hunger ?? 25, hungerFlagged: false, // needs (Phase 9)
       home: def.home, workplace: def.workplace,
       schedule_anchors: def.anchors.map(([t, a]) => [t, a]),
       defaultAnchors: def.anchors,
@@ -772,6 +775,12 @@ const SIM = (() => {
   // is none and the sim keeps running on the fallback schedule.
   const REPLAN_THRESHOLD = 7;      // importance that warrants a re-plan
   const REFLECTION_THRESHOLD = 40; // summed importance that triggers a reflection
+  // Needs (Phase 9): hunger 0-100 rises with time; bread satisfies it, so the
+  // whole economy — bakery, employment, arrests that shut the shop — has teeth.
+  const HUNGER_RATE = 4.5;         // points per in-game hour (~fully hungry in a day)
+  const HUNGER_EAT_AT = 55;        // eat bread from your bag once this hungry
+  const HUNGER_STARVING = 85;      // no bread + this hungry = a real problem
+  const HUNGER_PER_LOAF = 50;      // a loaf sets you right
   const REPLAN_COOLDOWN_MIN = 120; // sim minutes between re-plan calls
   const PLACES = ["home", "bakery", "market", "park"];
 
@@ -820,8 +829,14 @@ Rules: 3 to 8 entries, strictly chronological; first entry between 05:00 and 10:
       .map(([k, v]) => `${k}: affinity ${v.affinity} — ${v.summary}`).join("\n");
     const wanted = npc.isOfficer && wantedNames(state).length
       ? `\nActive cases — bring in: ${wantedNames(state).join(", ")}.` : "";
+    const hungerNote = npc.hunger >= HUNGER_STARVING
+      ? `\nYou are famished (hunger ${Math.round(npc.hunger)}/100) and have no bread — getting food should come first.`
+      : npc.hunger >= HUNGER_EAT_AT
+        ? `\nYou're getting hungry (hunger ${Math.round(npc.hunger)}/100); a trip to the bakery for bread wouldn't hurt.`
+        : "";
+    const coinNote = `\nYou have ${npc.coins} coins (bread costs ${BREAD_PRICE}).`;
     const prompt =
-`Day ${state.clock.day}${reason ? `, ${fmtClock(state.clock.minutes)} — adjust the rest of today's plan. Reason: ${reason}` : ""}.${wanted}
+`Day ${state.clock.day}${reason ? `, ${fmtClock(state.clock.minutes)} — adjust the rest of today's plan. Reason: ${reason}` : ""}.${wanted}${hungerNote}${coinNote}
 Notable memories:
 ${mems}
 Relationships:
@@ -1225,6 +1240,29 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     return { line: parsed.line.slice(0, 240), applied };
   }
 
+  // Rumor mechanic (Phase 9): `from` tells `to` their most notable recent
+  // firsthand news that `to` doesn't already know — so town knowledge
+  // genuinely spreads through conversation, not just co-presence.
+  const RUMOR_KEYWORDS = /\b(arrest|cell|theft|took|stole|purse|shut|hired|constable|market|gone|pinched|reported)\b/i;
+  function spreadRumor(state, from, to) {
+    const now = absMinutes(state.clock);
+    // Strip any "heard from X:" prefix so the CORE fact is what's compared —
+    // otherwise the same news re-spreads under a new wrapper each time.
+    const gist = (t) => t.toLowerCase().replace(/^heard from [a-z]+:\s*/, "").replace(/[^a-z ]/g, "").slice(0, 40);
+    const known = new Set(to.memories.map((m) => gist(m.text)));
+    const candidate = from.memories
+      .filter((m) => (m.type === "observation" || m.type === "reflection")
+        && m.importance >= 6 && now - m.ts <= 1440
+        && !m.text.startsWith("Heard from") && RUMOR_KEYWORDS.test(m.text)
+        && !known.has(gist(m.text)))
+      .sort((x, y) => y.importance - x.importance)[0];
+    if (!candidate) return null;
+    addMemory(state, to, "observation",
+      `Heard from ${from.name}: ${candidate.text}`,
+      { importance: Math.max(4, candidate.importance - 1) });
+    return candidate;
+  }
+
   async function runNpcConversation(state, a, b, { maxTurns = NPC_CONVO_MAX_TURNS, onLine = null } = {}) {
     state.activeConvo = { a: a.id, b: b.id, lines: [] };
     a.talking = true; b.talking = true;
@@ -1247,6 +1285,10 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
         const summary = turns.map((t) => `${t.speaker}: "${t.text}"`).join(" ");
         addMemory(state, a, "dialogue", `Chatted with ${b.name}. ${summary}`);
         addMemory(state, b, "dialogue", `Chatted with ${a.name}. ${summary}`);
+        // News travels: each swaps their juiciest recent firsthand fact, so
+        // an arrest or a shut shop reaches people who never saw it.
+        spreadRumor(state, a, b);
+        spreadRumor(state, b, a);
       }
     } finally {
       a.talking = false; b.talking = false;
@@ -1602,9 +1644,41 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       it.kind === "bread_loaf" && insideBuilding(BUILDINGS[0], it.x, it.y)).length;
   }
 
+  // Hunger rises with time; eating a carried loaf sets you right; being
+  // famished with an empty bag is a real, plan-bending problem (Phase 9).
+  function updateHunger(state, npc, gameMinutes) {
+    if (npc.jailedUntil) return; // fed in the cell
+    npc.hunger = Math.min(100, (npc.hunger || 0) + (gameMinutes / 60) * HUNGER_RATE);
+    if (npc.hunger >= HUNGER_EAT_AT) {
+      const idx = npc.inventory.indexOf("bread_loaf");
+      if (idx >= 0) {
+        npc.inventory.splice(idx, 1);
+        npc.hunger = Math.max(0, npc.hunger - HUNGER_PER_LOAF);
+        npc.hungerFlagged = false;
+        addMemory(state, npc, "observation", "Ate a loaf of bread. Much better.", { importance: 2 });
+        return;
+      }
+      // A baker at work never starves — flour, an oven, endless bread.
+      if (npc.workplace === BUILDINGS[0].id && insideBuilding(BUILDINGS[0], npc.x, npc.y)) {
+        takeWorldItem(state, 10, 8, 3); // eat a counter loaf if there's one
+        npc.hunger = Math.max(0, npc.hunger - HUNGER_PER_LOAF);
+        npc.hungerFlagged = false;
+        addMemory(state, npc, "observation", "Ate one of my own loaves. Perks of the job.", { importance: 2 });
+        return;
+      }
+    }
+    if (npc.hunger >= HUNGER_STARVING && !npc.hungerFlagged) {
+      npc.hungerFlagged = true;
+      addMemory(state, npc, "observation",
+        "I'm famished and have no bread — I need to get to the bakery before I'm no use to anyone.",
+        { importance: 7 });
+    }
+  }
+
   function tick(state, dtReal) {
     const c = state.clock;
-    c.minutes += dtReal * (1440 / DAY_REAL_SECONDS) * state.timeScale;
+    const gameMin = dtReal * (1440 / DAY_REAL_SECONDS) * state.timeScale;
+    c.minutes += gameMin;
     while (c.minutes >= 1440) { c.minutes -= 1440; c.day += 1; }
     for (const npc of state.npcs) {
       // Daily planning trigger (plan §3.5): one Fable 5 call per NPC per
@@ -1612,6 +1686,7 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
       // Jailed NPCs don't plan; they replan on release.
       if (!npc.jailedUntil && c.minutes >= hm("06:00") && npc.lastPlanDay !== c.day)
         npc.needsPlan = true;
+      updateHunger(state, npc, gameMin);
       updateNPC(state, npc, dtReal);
     }
   }
@@ -1630,7 +1705,8 @@ ${convo ? `Conversation so far:\n${convo}\n` : `You speak first — open natural
     spawnItem, takeWorldItem, pickupNearestItem, bakeryBreadCount,
     parseDialogueResponse, applyEffects, playerSheet,
     buildReflectionPrompt, generateReflection, bakeryOnDuty, bakeryStaff,
-    REFLECTION_THRESHOLD, BREAD_PRICE,
+    REFLECTION_THRESHOLD, BREAD_PRICE, updateHunger, spreadRumor,
+    HUNGER_EAT_AT, HUNGER_STARVING, HUNGER_RATE,
   };
 })();
 if (typeof module !== "undefined") module.exports = SIM;
@@ -1679,7 +1755,7 @@ if (typeof module !== "undefined") module.exports = SIM;
           cred: n.cred, gangRank: n.gangRank, jailedUntil: n.jailedUntil,
           lastTheftDay: n.lastTheftDay, lastReleaseDay: n.lastReleaseDay,
           role: n.role, goal: n.goal, gang: n.gang, isOfficer: n.isOfficer,
-          coins: n.coins, workplace: n.workplace,
+          coins: n.coins, workplace: n.workplace, hunger: n.hunger,
           importanceSinceReflection: n.importanceSinceReflection,
           lastReflectionDay: n.lastReflectionDay, relationships2: undefined,
           memories: n.memories.map((m) =>
@@ -1687,7 +1763,7 @@ if (typeof module !== "undefined") module.exports = SIM;
         };
       }
       localStorage.setItem(SAVE_KEY, JSON.stringify({
-        v: 8, clock: state.clock, memCounter: state.memCounter, seed: state.seed,
+        v: 9, clock: state.clock, memCounter: state.memCounter, seed: state.seed,
         player: { x: state.player.x, y: state.player.y,
                   role: state.player.role, faction: state.player.faction,
                   inventory: state.player.inventory,
@@ -1704,7 +1780,7 @@ if (typeof module !== "undefined") module.exports = SIM;
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.v !== 8) return; // older saves start fresh
+      if (s.v !== 9) return; // older saves start fresh
       state.clock = s.clock; state.memCounter = s.memCounter || 1;
       state.player.x = s.player.x; state.player.y = s.player.y;
       if (s.player.role) state.player.role = s.player.role;
@@ -1739,6 +1815,7 @@ if (typeof module !== "undefined") module.exports = SIM;
         if (d.isOfficer !== undefined) n.isOfficer = d.isOfficer;
         if (d.coins !== undefined) n.coins = d.coins;
         if (d.workplace !== undefined) n.workplace = d.workplace;
+        if (d.hunger !== undefined) n.hunger = d.hunger;
         if (d.importanceSinceReflection) n.importanceSinceReflection = d.importanceSinceReflection;
         if (d.lastReflectionDay) n.lastReflectionDay = d.lastReflectionDay;
         n.memories = d.memories.map((m) =>
@@ -2172,8 +2249,12 @@ if (typeof module !== "undefined") module.exports = SIM;
     document.getElementById("memtitle").textContent = `${npc.name}'s memory stream`;
     for (let i = 0; i < tabsEl.children.length; i++)
       tabsEl.children[i].style.background = i === selNpcIdx ? "#5a4a8c" : "#3a2f5c";
+    const loaves = npc.inventory.filter((i) => i === "bread_loaf").length;
+    const hungerTag = npc.hunger >= SIM.HUNGER_STARVING ? "famished" : npc.hunger >= SIM.HUNGER_EAT_AT ? "hungry" : "fed";
     document.getElementById("planview").innerHTML =
       `<b>${esc(npc.name)}'s plan</b> <span class="meta">(${state.llm && npc.lastPlanDay === state.clock.day && npc.memories.some((m) => m.type === "plan") ? "self-chosen (Fable 5)" : "fallback rhythm"})</span><br>` +
+      `<span class="meta">${npc.coins}¢ · ${hungerTag} (${Math.round(npc.hunger)}/100) · ${loaves} loaf${loaves === 1 ? "" : "s"}` +
+      `${npc.workplace ? " · bakery staff" : ""}${npc.gang ? ` · Mudlark ${npc.gangRank}` : ""}</span><br>` +
       npc.current_plan.map(([t, , , label]) => `<span class="meta">${t}</span> ${esc(label)}`).join("<br>");
     const lr = document.getElementById("lastretrieval");
     if (lastRetrieval) {

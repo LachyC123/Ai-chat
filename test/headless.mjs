@@ -239,6 +239,34 @@ for (const n of state.npcs)
   if (a === b && b === c) fail("crime waves identical across seeds — randomness not wired");
 }
 
+// ---- Needs: hunger drives eating (Phase 9) --------------------------------
+// Everyone got hungry and, having bought/carried bread, ate at least once.
+for (const n of state.npcs)
+  if (n.hunger < 0 || n.hunger > 100) fail(`${n.name} hunger out of range: ${n.hunger}`);
+const ateMemos = state.npcs.flatMap((n) =>
+  n.memories.filter((mm) => mm.text.includes("Ate a loaf") || mm.text.includes("Ate one of my own")));
+if (ateMemos.length < DAYS) fail(`too few meals eaten: ${ateMemos.length} over ${DAYS} days`);
+// A working baker keeps herself fed from her own oven — she eats regularly
+// (instantaneous hunger is snapshot-timing-sensitive, so assert meals eaten).
+const maraMeals = mara.memories.filter((mm) => mm.text.includes("Ate one of my own")).length;
+if (maraMeals < DAYS) fail(`Mara didn't keep herself fed: only ${maraMeals} meals over ${DAYS} days`);
+
+// ---- Rumor: firsthand news reaches non-witnesses via gossip ---------------
+// (No LLM here, so no NPC conversations fire — assert the spread mechanic
+//  directly and prove secondhand memories don't re-propagate.)
+{
+  const s = SIM.createState(SEED);
+  const [m2, , e2] = s.npcs;
+  SIM.addMemory(s, m2, "observation", "Watched Bram march Ren off to the station cell.", { importance: 8 });
+  const first = SIM.spreadRumor(s, m2, e2);
+  if (!first) fail("rumor didn't spread a high-importance firsthand fact");
+  if (!e2.memories.some((mm) => mm.text.startsWith("Heard from Mara") && mm.text.includes("march Ren")))
+    fail("listener didn't record the rumor with its source");
+  if (SIM.spreadRumor(s, m2, e2) !== null) fail("same rumor spread twice");
+  // secondhand "Heard from" memories must not re-propagate as firsthand
+  if (SIM.spreadRumor(s, e2, s.npcs[3]) !== null) fail("secondhand rumor re-propagated");
+}
+
 // NPCs notice each other (colleagues share the bakery)
 if (!mara.memories.some((mm) => mm.text.startsWith("Noticed Tomas")))
   fail("Mara never noticed Tomas despite sharing the bakery");
